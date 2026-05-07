@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Dungeon Front</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<!-- ── Lobby overlay ──────────────────────────────────────────────────────── -->
+<div id="lobby" class="lobby-overlay">
+  <div class="lobby-container">
+    <div class="lobby-title">DUNGEON FRONT</div>
+    <div class="lobby-subtitle">Choose Your Path</div>
+
+    <div class="lobby-section">
+      <label class="lobby-label" for="playerName">Your Name</label>
+      <input type="text" id="playerName" class="name-input" placeholder="Enter name..." maxlength="20" value="Hero">
+    </div>
+
+    <div class="lobby-section">
+      <div class="lobby-label">Choose Faction</div>
+      <div class="faction-buttons">
+        <button class="faction-btn" data-faction="order">
+          <span class="faction-icon">⚔</span>
+          <span class="faction-name">ORDER</span>
+          <span class="faction-desc">Defenders of the realm.<br>Stalwart and disciplined.</span>
+        </button>
+        <button class="faction-btn" data-faction="chaos">
+          <span class="faction-icon">☠</span>
+          <span class="faction-name">CHAOS</span>
+          <span class="faction-desc">Warriors born of fire.<br>Relentless and brutal.</span>
+        </button>
+        <button class="faction-btn" data-faction="nature">
+          <span class="faction-icon">♣</span>
+          <span class="faction-name">NATURE</span>
+          <span class="faction-desc">Children of the forest.<br>Swift and unpredictable.</span>
+        </button>
+      </div>
+    </div>
+
+    <div class="lobby-section">
+      <div class="lobby-label">Choose Class</div>
+      <div class="class-buttons">
+        <button class="class-btn" data-class="warrior">
+          <span class="class-icon">⚔️</span>
+          <span class="class-name">WARRIOR</span>
+          <div class="class-stats">
+            <span>HP: 150</span>
+            <span>SPD: 160</span>
+            <span>DMG: 30</span>
+            <span>Melee</span>
+          </div>
+        </button>
+        <button class="class-btn" data-class="mage">
+          <span class="class-icon">🔮</span>
+          <span class="class-name">MAGE</span>
+          <div class="class-stats">
+            <span>HP: 80</span>
+            <span>SPD: 190</span>
+            <span>DMG: 50</span>
+            <span>Magic</span>
+          </div>
+        </button>
+        <button class="class-btn" data-class="ranger">
+          <span class="class-icon">🏹</span>
+          <span class="class-name">RANGER</span>
+          <div class="class-stats">
+            <span>HP: 100</span>
+            <span>SPD: 210</span>
+            <span>DMG: 40</span>
+            <span>Ranged</span>
+          </div>
+        </button>
+      </div>
+    </div>
+
+    <div class="lobby-bottom">
+      <div class="online-count">Players online: <span id="onlineCount">0</span></div>
+      <button id="enterBattle" class="enter-btn" disabled>ENTER BATTLE</button>
+      <div id="lobbyError" class="lobby-error"></div>
+    </div>
+  </div>
+</div>
+
+<!-- ── Death overlay ──────────────────────────────────────────────────────── -->
+<div id="deathOverlay" class="death-overlay hidden">
+  <div class="death-content">
+    <div class="death-title">YOU DIED</div>
+    <div class="death-sub" id="respawnText">Respawning in 5...</div>
+  </div>
+</div>
+
+<!-- ── HUD ────────────────────────────────────────────────────────────────── -->
+<div id="hud" class="hud hidden">
+
+  <!-- Top bar: faction scores -->
+  <div id="factionBar" class="faction-bar">
+    <span class="fscore order-score"><span class="fs-icon">⚔</span> ORDER [<span id="orderScore">0</span>]</span>
+    <span class="fscore chaos-score">[<span id="chaosScore">0</span>] CHAOS <span class="fs-icon">☠</span></span>
+    <span class="fscore nature-score">[<span id="natureScore">0</span>] NATURE <span class="fs-icon">♣</span></span>
+  </div>
+
+  <!-- Top right: territory info -->
+  <div id="territoryInfo" class="territory-info"></div>
+
+  <!-- Bottom left: player info -->
+  <div id="playerInfo" class="player-info hidden">
+    <div class="pi-name"><span id="piIcon"></span> <span id="piName"></span></div>
+    <div class="pi-hp-wrap">
+      <div class="pi-hp-bar"><div id="piHpFill" class="pi-hp-fill"></div></div>
+      <span id="piHpText" class="pi-hp-text"></span>
+    </div>
+    <div class="pi-faction" id="piFaction"></div>
+  </div>
+
+  <!-- Bottom right: minimap -->
+  <canvas id="minimap" class="minimap" width="160" height="120"></canvas>
+</div>
+
+<!-- ── Notification area ──────────────────────────────────────────────────── -->
+<div id="notifications" class="notifications"></div>
+
+<!-- ── Phaser canvas placeholder ─────────────────────────────────────────── -->
+<div id="game-container"></div>
+
+<!-- ── Scripts ────────────────────────────────────────────────────────────── -->
+<script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/phaser@3.60.0/dist/phaser.min.js"></script>
+<script src="game.js"></script>
+</body>
+</html>
