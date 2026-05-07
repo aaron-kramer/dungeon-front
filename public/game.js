@@ -788,10 +788,15 @@ function initThree() {
   // Input
   setupInput();
 
-  // Pointer lock
+  // Pointer lock — request unadjustedMovement to strip OS mouse acceleration,
+  // which is what causes the "drift/momentum" feeling. Fall back silently if
+  // the browser doesn't support it.
   renderer.domElement.addEventListener('click', () => {
     if (!gameStarted) return;
-    renderer.domElement.requestPointerLock();
+    const req = renderer.domElement.requestPointerLock({ unadjustedMovement: true });
+    if (req && typeof req.catch === 'function') {
+      req.catch(() => renderer.domElement.requestPointerLock());
+    }
   });
   document.addEventListener('pointerlockchange', () => {
     isPointerLocked = document.pointerLockElement === renderer.domElement;
@@ -819,8 +824,8 @@ function setupInput() {
     yaw   -= e.movementX * 0.002 * mouseSensitivity;
     pitch -= e.movementY * 0.002 * mouseSensitivity;
     pitch  = Math.max(-1.4, Math.min(1.4, pitch));
-    pivot.rotation.y = yaw;
-    camera.rotation.x = pitch;
+    pivot.rotation.set(0, yaw, 0);
+    camera.rotation.set(pitch, 0, 0);
   });
 
   document.addEventListener('keydown', e => {
