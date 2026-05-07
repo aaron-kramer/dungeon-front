@@ -1,14 +1,14 @@
 /* ═══════════════════════════════════════════════════════════════════════════
-   DUNGEON FRONT — client game.js
-   Phaser 3.60 + Socket.io
+   DUNGEON FRONT — Three.js FPS client
+   Three.js r134 (global THREE) + Socket.io
    ═══════════════════════════════════════════════════════════════════════════ */
-
 'use strict';
 
 // ── Global state ─────────────────────────────────────────────────────────────
 let socket;
 let myId = null;
-let localPlayer = null;   // mirror of our entry in gameState.players
+let localPlayer = null;
+let gameStarted = false;
 
 let gameState = {
   players: [],
@@ -17,13 +17,8 @@ let gameState = {
   projectiles: [],
 };
 
-let damageNumbers = [];   // { x, y, amount, alpha, vy, id, isMonster }
-let notifications = [];   // { el, timer }
-let respawnCountdown = 0;
-let respawnTimer = null;
-
-// ── Faction / class colours ──────────────────────────────────────────────────
-const FACTION_COLOR = {
+// ── Faction colours ───────────────────────────────────────────────────────────
+const FACTION_HEX = {
   order:  0x2255cc,
   chaos:  0xcc2222,
   nature: 0x22aa44,
@@ -33,44 +28,56 @@ const FACTION_CSS = {
   chaos:  '#ff6666',
   nature: '#66dd88',
 };
-const FACTION_NAME_CSS = {
-  order:  '#2255cc',
-  chaos:  '#cc2222',
-  nature: '#22aa44',
-};
 const CLASS_ICON = { warrior: '⚔️', mage: '🔮', ranger: '🏹' };
 
 // ── Territory definitions (must match server) ────────────────────────────────
 const TERRITORY_DEFS = [
-  { id: 'order_hq',       name: 'Order Keep',     x: 400,  y: 1500, w: 700,  h: 600 },
-  { id: 'chaos_hq',       name: 'Chaos Fortress', x: 3600, y: 1500, w: 700,  h: 600 },
-  { id: 'nature_hq',      name: 'Nature Grove',   x: 2000, y: 400,  w: 700,  h: 500 },
-  { id: 'west_plains',    name: 'Western Plains', x: 1100, y: 1500, w: 600,  h: 500 },
-  { id: 'east_valley',    name: 'Eastern Valley', x: 2900, y: 1500, w: 600,  h: 500 },
-  { id: 'north_ruins',    name: 'Northern Ruins', x: 2000, y: 1050, w: 600,  h: 500 },
-  { id: 'center_dungeon', name: 'Dark Dungeon',   x: 2000, y: 1500, w: 700,  h: 700 },
-  { id: 'sw_forest',      name: 'Shadow Forest',  x: 1100, y: 2200, w: 600,  h: 500 },
-  { id: 'se_canyon',      name: 'Fire Canyon',    x: 2900, y: 2200, w: 600,  h: 500 },
+  { id: 'order_hq',       name: 'Order Keep',       x: -800, z:  0,    isHQ: true  },
+  { id: 'chaos_hq',       name: 'Chaos Fortress',   x:  800, z:  0,    isHQ: true  },
+  { id: 'nature_hq',      name: 'Nature Grove',     x:    0, z: -850,  isHQ: true  },
+  { id: 'west_plains',    name: 'Western Plains',   x: -500, z:  0,    isHQ: false },
+  { id: 'east_valley',    name: 'Eastern Valley',   x:  500, z:  0,    isHQ: false },
+  { id: 'north_ruins',    name: 'Northern Ruins',   x:    0, z: -350,  isHQ: false },
+  { id: 'center_dungeon', name: 'Dark Dungeon',     x:    0, z:  0,    isHQ: false },
+  { id: 'sw_forest',      name: 'Shadow Forest',    x: -500, z:  350,  isHQ: false },
+  { id: 'se_canyon',      name: 'Fire Canyon',      x:  500, z:  350,  isHQ: false },
 ];
-
-// ── Road connections ──────────────────────────────────────────────────────────
-const ROADS = [
-  ['order_hq', 'west_plains'],
-  ['west_plains', 'center_dungeon'],
-  ['center_dungeon', 'east_valley'],
-  ['east_valley', 'chaos_hq'],
-  ['nature_hq', 'north_ruins'],
-  ['north_ruins', 'center_dungeon'],
-  ['center_dungeon', 'sw_forest'],
-  ['center_dungeon', 'se_canyon'],
-  ['west_plains', 'sw_forest'],
-  ['east_valley', 'se_canyon'],
-];
-
 const TERR_BY_ID = {};
 for (const t of TERRITORY_DEFS) TERR_BY_ID[t.id] = t;
 
-// ── Lobby UI setup ────────────────────────────────────────────────────────────
+// ── Minimap constants ──────────────────────────────────────────────────────────
+const MM_SIZE = 180;
+const WORLD_HALF = 1000;
+
+// ── Movement state ─────────────────────────────────────────────────────────────
+let yaw = 0;
+let pitch = 0;
+let moveForward = false, moveBack = false, moveLeft = false, moveRight = false;
+let isPointerLocked = false;
+
+// ── Three.js objects ───────────────────────────────────────────────────────────
+let renderer, scene, camera, pivot;
+let weaponScene, weaponCamera, weaponMesh, weaponBob = 0;
+let weaponLurchTime = 0;
+
+// Maps for remote entities
+const playerMeshes  = {};  // id → THREE.Group
+const monsterMeshes = {};  // id → THREE.Group
+const projMeshes    = {};  // id → THREE.Mesh/Group
+const terrPillars   = {};  // id → { pillar, light }
+
+// Damage number DOM elements pool
+const dmgElPool = [];
+const activeDmgEls = [];
+
+// Move send throttle
+let lastMoveSent = 0;
+
+// Respawn state
+let respawnCountdown = 0;
+let respawnTimer = null;
+
+// ── Lobby UI ──────────────────────────────────────────────────────────────────
 let selectedFaction = null;
 let selectedClass   = null;
 
@@ -94,8 +101,7 @@ document.querySelectorAll('.class-btn').forEach(btn => {
 
 function updateEnterButton() {
   const name = document.getElementById('playerName').value.trim();
-  const ok = selectedFaction && selectedClass && name.length > 0;
-  document.getElementById('enterBattle').disabled = !ok;
+  document.getElementById('enterBattle').disabled = !(selectedFaction && selectedClass && name.length > 0);
 }
 document.getElementById('playerName').addEventListener('input', updateEnterButton);
 
@@ -105,102 +111,19 @@ document.getElementById('enterBattle').addEventListener('click', () => {
   socket.emit('join_game', { name, faction: selectedFaction, class: selectedClass });
 });
 
-// ── Socket init ───────────────────────────────────────────────────────────────
-function initSocket() {
-  socket = io();
-
-  socket.on('connect', () => {
-    console.log('Connected:', socket.id);
-    showNotification('Connected to Dungeon Front', '#aaaaff', 3000);
-  });
-
-  socket.on('disconnect', () => {
-    showNotification('Disconnected from server', '#ff6666', 5000);
-  });
-
-  socket.on('joined', ({ id, player, mapWidth, mapHeight }) => {
-    myId = id;
-    localPlayer = { ...player };
-    document.getElementById('lobby').classList.add('hidden');
-    document.getElementById('hud').classList.remove('hidden');
-    document.getElementById('playerInfo').classList.remove('hidden');
-    updatePlayerInfoHUD();
-    showNotification('Welcome to Dungeon Front!', '#ffdd88', 4000);
-  });
-
-  socket.on('game_state', (state) => {
-    gameState = state;
-
-    // Sync local player from server
-    if (myId) {
-      const serverMe = state.players.find(p => p.id === myId);
-      if (serverMe) {
-        if (!localPlayer) localPlayer = { ...serverMe };
-        // Always sync HP and dead state from server
-        localPlayer.hp   = serverMe.hp;
-        localPlayer.maxHp = serverMe.maxHp;
-        localPlayer.dead  = serverMe.dead;
-        // Only sync position when dead (server is authoritative on respawn)
-        if (serverMe.dead) {
-          localPlayer.x = serverMe.x;
-          localPlayer.y = serverMe.y;
-        }
-      }
-    }
-
-    // Process damage numbers from server
-    if (state.damageNumbers && state.damageNumbers.length) {
-      for (const dn of state.damageNumbers) {
-        damageNumbers.push({
-          x: dn.x, y: dn.y,
-          amount: dn.amount,
-          alpha: 1.0,
-          vy: -40,
-          id: dn.id,
-        });
-      }
-    }
-
-    updateFactionScores();
-    updateMinimapCanvas();
-    updatePlayerInfoHUD();
-    updateTerritoryInfoHUD();
-
-    // Update online count
-    document.getElementById('onlineCount').textContent = state.players.length;
-  });
-
-  socket.on('you_died', ({ respawnIn }) => {
-    respawnCountdown = respawnIn;
-    document.getElementById('deathOverlay').classList.remove('hidden');
-    updateRespawnText();
-    if (respawnTimer) clearInterval(respawnTimer);
-    respawnTimer = setInterval(() => {
-      respawnCountdown--;
-      updateRespawnText();
-      if (respawnCountdown <= 0) {
-        clearInterval(respawnTimer);
-        respawnTimer = null;
-      }
-    }, 1000);
-  });
-
-  socket.on('respawned', ({ x, y }) => {
-    if (localPlayer) { localPlayer.x = x; localPlayer.y = y; localPlayer.dead = false; localPlayer.hp = localPlayer.maxHp; }
-    document.getElementById('deathOverlay').classList.add('hidden');
-    if (respawnTimer) { clearInterval(respawnTimer); respawnTimer = null; }
-  });
-
-  socket.on('territory_captured', ({ name, faction, from }) => {
-    const color = FACTION_CSS[faction] || '#ffffff';
-    const fromStr = from ? ` from ${from.charAt(0).toUpperCase() + from.slice(1)}` : '';
-    showNotification(`${faction.charAt(0).toUpperCase() + faction.slice(1)} captured ${name}${fromStr}!`, color, 4000);
-  });
-}
-
-function updateRespawnText() {
-  document.getElementById('respawnText').textContent =
-    respawnCountdown > 0 ? `Respawning in ${respawnCountdown}...` : 'Respawning...';
+// ── Notifications ─────────────────────────────────────────────────────────────
+function showNotification(text, color, duration) {
+  const container = document.getElementById('notifications');
+  const el = document.createElement('div');
+  el.className = 'notification';
+  el.textContent = text;
+  el.style.color = color || '#ffffff';
+  el.style.opacity = '1';
+  container.appendChild(el);
+  setTimeout(() => {
+    el.style.opacity = '0';
+    setTimeout(() => { if (el.parentNode) el.parentNode.removeChild(el); }, 350);
+  }, duration - 350);
 }
 
 // ── HUD helpers ───────────────────────────────────────────────────────────────
@@ -216,12 +139,11 @@ function updateFactionScores() {
 
 function updatePlayerInfoHUD() {
   if (!localPlayer) return;
-  const icon = CLASS_ICON[localPlayer.class] || '';
-  document.getElementById('piIcon').textContent    = icon;
-  document.getElementById('piName').textContent    = localPlayer.name;
+  document.getElementById('piIcon').textContent   = CLASS_ICON[localPlayer.class] || '';
+  document.getElementById('piName').textContent   = localPlayer.name;
   const pct = Math.max(0, Math.min(1, localPlayer.hp / localPlayer.maxHp));
-  document.getElementById('piHpFill').style.width  = (pct * 100) + '%';
-  document.getElementById('piHpText').textContent  = `${Math.max(0,localPlayer.hp)}/${localPlayer.maxHp}`;
+  document.getElementById('piHpFill').style.width = (pct * 100) + '%';
+  document.getElementById('piHpText').textContent = `${Math.max(0, localPlayer.hp)}/${localPlayer.maxHp}`;
   const fEl = document.getElementById('piFaction');
   fEl.textContent = localPlayer.faction ? localPlayer.faction.toUpperCase() : '';
   fEl.style.color = FACTION_CSS[localPlayer.faction] || '#ffffff';
@@ -232,15 +154,14 @@ function updateTerritoryInfoHUD() {
     document.getElementById('territoryInfo').innerHTML = '';
     return;
   }
-  // Find nearest territory
   let nearest = null, nearestDist = Infinity;
   for (const t of gameState.territories) {
-    const dx = localPlayer.x - t.x, dy = localPlayer.y - t.y;
-    const d = Math.sqrt(dx*dx + dy*dy);
+    const dx = localPlayer.x - t.x, dz = localPlayer.z - t.y;
+    const d = Math.sqrt(dx * dx + dz * dz);
     if (d < nearestDist) { nearestDist = d; nearest = t; }
   }
   if (!nearest) return;
-  const onPoint = nearestDist <= 100;
+  const onPoint = nearestDist <= 120;
   let html = `<div style="color:#ddccbb;font-weight:bold">${nearest.name}</div>`;
   const ownerColor = nearest.owner ? (FACTION_CSS[nearest.owner] || '#aaa') : '#888';
   html += `<div style="color:${ownerColor}">${nearest.owner ? nearest.owner.toUpperCase() : 'Unclaimed'}</div>`;
@@ -260,683 +181,1093 @@ function updateTerritoryInfoHUD() {
   document.getElementById('territoryInfo').innerHTML = html;
 }
 
-// ── Minimap canvas ─────────────────────────────────────────────────────────────
-const MINIMAP_W = 160, MINIMAP_H = 120;
-const MAP_W = 4000, MAP_H = 3000;
-
-const TERR_FILL_COLORS = {
-  order_hq:       '#2244aa',
-  chaos_hq:       '#aa2222',
-  nature_hq:      '#226622',
-  west_plains:    '#446622',
-  east_valley:    '#6e3a1a',
-  north_ruins:    '#555555',
-  center_dungeon: '#111128',
-  sw_forest:      '#1e4a1e',
-  se_canyon:      '#5a2a0a',
-};
-
-function updateMinimapCanvas() {
+// ── Minimap ────────────────────────────────────────────────────────────────────
+function drawMinimap() {
   const canvas = document.getElementById('minimap');
   const ctx = canvas.getContext('2d');
-  ctx.clearRect(0, 0, MINIMAP_W, MINIMAP_H);
+  ctx.clearRect(0, 0, MM_SIZE, MM_SIZE);
 
-  function mx(x) { return x / MAP_W * MINIMAP_W; }
-  function my(y) { return y / MAP_H * MINIMAP_H; }
+  // Convert world coord to minimap pixel
+  function mx(wx) { return (wx + WORLD_HALF) / (WORLD_HALF * 2) * MM_SIZE; }
+  function mz(wz) { return (wz + WORLD_HALF) / (WORLD_HALF * 2) * MM_SIZE; }
 
-  // Background
-  ctx.fillStyle = '#080810';
-  ctx.fillRect(0, 0, MINIMAP_W, MINIMAP_H);
+  ctx.fillStyle = '#0a0a12';
+  ctx.fillRect(0, 0, MM_SIZE, MM_SIZE);
 
-  // Territory zones
+  // Territory zone colors
+  const zoneColors = {
+    order_hq:       '#1a2e88', chaos_hq:       '#882222', nature_hq:      '#1a5a1a',
+    west_plains:    '#2a4a18', east_valley:    '#4a2810', north_ruins:    '#3a3a3a',
+    center_dungeon: '#080820', sw_forest:      '#143214', se_canyon:      '#3a1808',
+  };
+  const zoneSize = 180; // world units
+
   for (const td of TERRITORY_DEFS) {
-    const fill = TERR_FILL_COLORS[td.id] || '#333333';
-    ctx.fillStyle = fill;
-    ctx.fillRect(mx(td.x - td.w/2), my(td.y - td.h/2), mx(td.w), my(td.h));
+    const col = zoneColors[td.id] || '#222';
+    ctx.fillStyle = col;
+    const half = zoneSize / 2;
+    ctx.fillRect(mx(td.x - half), mz(td.z - half), mx(td.x + half) - mx(td.x - half), mz(td.z + half) - mz(td.z - half));
   }
 
-  // Territory ownership overlay
+  // Territory ownership overlay + pillar dot
   for (const t of gameState.territories) {
     const td = TERR_BY_ID[t.id];
-    if (!td || !t.owner) continue;
-    const color = t.owner === 'order' ? 'rgba(34,85,204,0.35)' :
-                  t.owner === 'chaos' ? 'rgba(204,34,34,0.35)' :
-                  'rgba(34,170,68,0.35)';
-    ctx.fillStyle = color;
-    ctx.fillRect(mx(td.x - td.w/2), my(td.y - td.h/2), mx(td.w), my(td.h));
-
-    // Flag square
-    const flagColor = t.owner === 'order' ? '#4466ff' :
-                      t.owner === 'chaos' ? '#ff4444' : '#44cc66';
-    ctx.fillStyle = flagColor;
-    ctx.fillRect(mx(td.x) - 3, my(td.y) - 3, 6, 6);
+    if (!td) continue;
+    if (t.owner) {
+      const r = t.owner === 'order' ? 34 : t.owner === 'chaos' ? 204 : 34;
+      const g2 = t.owner === 'order' ? 85 : t.owner === 'chaos' ? 34 : 170;
+      const b = t.owner === 'order' ? 204 : t.owner === 'chaos' ? 34 : 68;
+      ctx.fillStyle = `rgba(${r},${g2},${b},0.3)`;
+      const half = zoneSize / 2;
+      ctx.fillRect(mx(td.x - half), mz(td.z - half), mx(td.x + half) - mx(td.x - half), mz(td.z + half) - mz(td.z - half));
+    }
+    // Pillar square
+    const pColor = t.owner ? (FACTION_CSS[t.owner] || '#888') : '#666';
+    ctx.fillStyle = pColor;
+    ctx.fillRect(mx(td.x) - 3, mz(td.z) - 3, 6, 6);
   }
 
-  // Player dots
+  // Other players
   for (const p of gameState.players) {
-    if (p.dead) continue;
-    ctx.fillStyle = p.id === myId ? '#ffffff' : (FACTION_CSS[p.faction] || '#888888');
-    const r = p.id === myId ? 3 : 2;
+    if (p.dead || p.id === myId) continue;
+    ctx.fillStyle = FACTION_CSS[p.faction] || '#888';
     ctx.beginPath();
-    ctx.arc(mx(p.x), my(p.y), r, 0, Math.PI * 2);
+    ctx.arc(mx(p.x), mz(p.y), 2.5, 0, Math.PI * 2);
     ctx.fill();
   }
 
-  // Local player blink
+  // Local player
   if (localPlayer && !localPlayer.dead) {
-    const blink = Math.floor(Date.now() / 400) % 2 === 0;
-    if (blink) {
-      ctx.strokeStyle = '#ffffff';
-      ctx.lineWidth = 1.5;
+    const lx = mx(localPlayer.x), lz = mz(localPlayer.z);
+    ctx.fillStyle = '#ffffff';
+    ctx.beginPath();
+    ctx.arc(lx, lz, 4, 0, Math.PI * 2);
+    ctx.fill();
+    // Direction indicator
+    ctx.strokeStyle = '#ffffff';
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.moveTo(lx, lz);
+    ctx.lineTo(lx + Math.sin(yaw) * 8, lz - Math.cos(yaw) * 8);
+    ctx.stroke();
+    // Blink ring
+    if (Math.floor(Date.now() / 400) % 2 === 0) {
+      ctx.strokeStyle = '#ffff88';
+      ctx.lineWidth = 1;
       ctx.beginPath();
-      ctx.arc(mx(localPlayer.x), my(localPlayer.y), 4, 0, Math.PI * 2);
+      ctx.arc(lx, lz, 6, 0, Math.PI * 2);
       ctx.stroke();
     }
   }
 
-  // Border
   ctx.strokeStyle = '#443355';
   ctx.lineWidth = 1;
-  ctx.strokeRect(0, 0, MINIMAP_W, MINIMAP_H);
+  ctx.strokeRect(0, 0, MM_SIZE, MM_SIZE);
 }
 
-// ── Notifications ─────────────────────────────────────────────────────────────
-function showNotification(text, color, duration) {
-  const container = document.getElementById('notifications');
-  const el = document.createElement('div');
-  el.className = 'notification';
-  el.textContent = text;
-  el.style.color = color || '#ffffff';
-  el.style.opacity = '1';
-  container.appendChild(el);
-
-  setTimeout(() => {
-    el.style.opacity = '0';
-    setTimeout(() => { if (el.parentNode) el.parentNode.removeChild(el); }, 350);
-  }, duration - 350);
+// ── Canvas-texture label helper ───────────────────────────────────────────────
+function makeNameLabel(name, faction) {
+  const canvas = document.createElement('canvas');
+  canvas.width = 256; canvas.height = 64;
+  const ctx = canvas.getContext('2d');
+  ctx.clearRect(0, 0, 256, 64);
+  ctx.font = 'bold 22px Georgia, serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillStyle = 'rgba(0,0,0,0.55)';
+  ctx.fillRect(4, 14, 248, 36);
+  ctx.fillStyle = FACTION_CSS[faction] || '#ffffff';
+  ctx.fillText(name.slice(0, 16), 128, 32);
+  const tex = new THREE.CanvasTexture(canvas);
+  const mat = new THREE.MeshBasicMaterial({ map: tex, transparent: true, depthTest: false });
+  const mesh = new THREE.Mesh(new THREE.PlaneGeometry(2.2, 0.55), mat);
+  mesh.renderOrder = 999;
+  return mesh;
 }
 
-// ══════════════════════════════════════════════════════════════════════════════
-// PHASER GAME
-// ══════════════════════════════════════════════════════════════════════════════
+// ── HP bar plane ───────────────────────────────────────────────────────────────
+function makeHpBarMesh() {
+  const geo = new THREE.PlaneGeometry(1.4, 0.18);
+  const mat = new THREE.MeshBasicMaterial({ color: 0x33cc33, depthTest: false });
+  const mesh = new THREE.Mesh(geo, mat);
+  mesh.renderOrder = 998;
+  return mesh;
+}
 
-class MainScene extends Phaser.Scene {
-  constructor() {
-    super({ key: 'MainScene' });
-    this.worldGfx       = null;
-    this.playerFollowTarget = null;
-    this.keys           = {};
-    this.attackCooldown = 0;
-    this.lastSentX      = 0;
-    this.lastSentY      = 0;
-    this.lastMoveTime   = 0;
-    this.nameTexts      = {};   // id → Phaser text (cleared each frame, using worldGfx for labels)
-    this.vignetteGfx    = null;
+// ── Player group ───────────────────────────────────────────────────────────────
+function buildPlayerGroup(p) {
+  const group = new THREE.Group();
+  const fcolor = FACTION_HEX[p.faction] || 0x888888;
+
+  const body = new THREE.Mesh(
+    new THREE.BoxGeometry(1.0, 1.5, 0.6),
+    new THREE.MeshLambertMaterial({ color: fcolor })
+  );
+  body.position.set(0, 0.75, 0);
+  group.add(body);
+
+  const head = new THREE.Mesh(
+    new THREE.BoxGeometry(0.7, 0.7, 0.7),
+    new THREE.MeshLambertMaterial({ color: fcolor })
+  );
+  head.position.set(0, 1.85, 0);
+  group.add(head);
+
+  // Weapon
+  let wpn;
+  if (p.class === 'warrior') {
+    wpn = new THREE.Mesh(
+      new THREE.BoxGeometry(0.15, 1.2, 0.15),
+      new THREE.MeshLambertMaterial({ color: 0xaaaacc })
+    );
+    wpn.rotation.z = Math.PI / 4;
+    wpn.position.set(0.6, 1.0, 0.1);
+  } else if (p.class === 'mage') {
+    wpn = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.05, 0.05, 1.4, 6),
+      new THREE.MeshLambertMaterial({ color: 0x9933ff })
+    );
+    wpn.position.set(0.6, 1.0, 0.1);
+  } else {
+    wpn = new THREE.Mesh(
+      new THREE.BoxGeometry(0.08, 1.0, 0.08),
+      new THREE.MeshLambertMaterial({ color: 0x886633 })
+    );
+    wpn.position.set(0.6, 1.0, 0.1);
   }
+  group.add(wpn);
 
-  preload() {}
+  // Name label
+  const label = makeNameLabel(p.name, p.faction);
+  label.position.set(0, 2.9, 0);
+  group.add(label);
 
-  create() {
-    const scene = this;
+  // HP bar
+  const hpBar = makeHpBarMesh();
+  hpBar.position.set(0, 2.45, 0);
+  group.add(hpBar);
+  group.userData.hpBar = hpBar;
+  group.userData.hpBarBg = null;
 
-    // ── Draw static world texture ─────────────────────────────────────────────
-    const worldDraw = this.add.graphics();
-    this._drawWorld(worldDraw);
-    worldDraw.generateTexture('world', MAP_W, MAP_H);
-    worldDraw.destroy();
+  const hpBarBg = new THREE.Mesh(
+    new THREE.PlaneGeometry(1.4, 0.18),
+    new THREE.MeshBasicMaterial({ color: 0x440000, depthTest: false })
+  );
+  hpBarBg.position.set(0, 2.45, -0.01);
+  hpBarBg.renderOrder = 997;
+  group.add(hpBarBg);
+  group.userData.hpBarBg = hpBarBg;
 
-    this.add.image(MAP_W / 2, MAP_H / 2, 'world');
+  return group;
+}
 
-    // ── Dynamic graphics layer (entities) ────────────────────────────────────
-    this.worldGfx = this.add.graphics();
+// ── Monster group ──────────────────────────────────────────────────────────────
+function buildMonsterGroup(m) {
+  const group = new THREE.Group();
 
-    // ── Vignette (screen-space) ───────────────────────────────────────────────
-    this.vignetteGfx = this.add.graphics();
-    this.vignetteGfx.setScrollFactor(0);
-    this.vignetteGfx.setDepth(10);
-
-    // ── Camera ────────────────────────────────────────────────────────────────
-    this.cameras.main.setBounds(0, 0, MAP_W, MAP_H);
-    this.playerFollowTarget = this.add.rectangle(2000, 1500, 2, 2, 0x000000, 0);
-    this.cameras.main.startFollow(this.playerFollowTarget, false, 0.08, 0.08);
-
-    // ── Input ─────────────────────────────────────────────────────────────────
-    this.keys = this.input.keyboard.addKeys({
-      up:    Phaser.Input.Keyboard.KeyCodes.W,
-      down:  Phaser.Input.Keyboard.KeyCodes.S,
-      left:  Phaser.Input.Keyboard.KeyCodes.A,
-      right: Phaser.Input.Keyboard.KeyCodes.D,
-      upArr: Phaser.Input.Keyboard.KeyCodes.UP,
-      downArr: Phaser.Input.Keyboard.KeyCodes.DOWN,
-      leftArr: Phaser.Input.Keyboard.KeyCodes.LEFT,
-      rightArr: Phaser.Input.Keyboard.KeyCodes.RIGHT,
-    });
-
-    this.input.on('pointerdown', (pointer) => {
-      if (!myId || !localPlayer || localPlayer.dead) return;
-      if (document.getElementById('lobby').classList.contains('hidden') === false) return;
-      const wx = pointer.worldX;
-      const wy = pointer.worldY;
-      localPlayer.facing = Math.atan2(wy - localPlayer.y, wx - localPlayer.x);
-      socket.emit('player_attack', { targetX: wx, targetY: wy });
-    });
-
-    // ── Vignette draw ─────────────────────────────────────────────────────────
-    this._drawVignette();
-  }
-
-  _drawWorld(g) {
-    const W = MAP_W, H = MAP_H;
-
-    // Base ground
-    g.fillStyle(0x1a2a1a);
-    g.fillRect(0, 0, W, H);
-
-    // Territory zones (background fill)
-    const zones = [
-      { id: 'order_hq',       x: 400,  y: 1500, w: 700,  h: 600,  fill: 0xb8987a },
-      { id: 'chaos_hq',       x: 3600, y: 1500, w: 700,  h: 600,  fill: 0x2a1010 },
-      { id: 'nature_hq',      x: 2000, y: 400,  w: 700,  h: 500,  fill: 0x2d6e2d },
-      { id: 'west_plains',    x: 1100, y: 1500, w: 600,  h: 500,  fill: 0x5a8a3a },
-      { id: 'east_valley',    x: 2900, y: 1500, w: 600,  h: 500,  fill: 0x6e3a1a },
-      { id: 'north_ruins',    x: 2000, y: 1050, w: 600,  h: 500,  fill: 0x5a5a5a },
-      { id: 'center_dungeon', x: 2000, y: 1500, w: 700,  h: 700,  fill: 0x1a1a2e },
-      { id: 'sw_forest',      x: 1100, y: 2200, w: 600,  h: 500,  fill: 0x1e4a1e },
-      { id: 'se_canyon',      x: 2900, y: 2200, w: 600,  h: 500,  fill: 0x5a2a0a },
-    ];
-
-    // Roads first (beneath zones)
-    g.fillStyle(0x2a2318);
-    const roadW = 80;
-    for (const [aId, bId] of ROADS) {
-      const a = TERR_BY_ID[aId], b = TERR_BY_ID[bId];
-      if (!a || !b) continue;
-      const dx = b.x - a.x, dy = b.y - a.y;
-      const len = Math.sqrt(dx*dx + dy*dy);
-      const nx = -dy/len * roadW/2, ny = dx/len * roadW/2;
-      g.fillPoints([
-        { x: a.x + nx, y: a.y + ny },
-        { x: b.x + nx, y: b.y + ny },
-        { x: b.x - nx, y: b.y - ny },
-        { x: a.x - nx, y: a.y - ny },
-      ], true);
-    }
-
-    // Zone fills
-    for (const z of zones) {
-      g.fillStyle(z.fill);
-      g.fillRect(z.x - z.w/2, z.y - z.h/2, z.w, z.h);
-    }
-
-    // Zone borders with faction default color hints
-    const borderColors = {
-      order_hq:       0x2255cc,
-      chaos_hq:       0xcc2222,
-      nature_hq:      0x22aa44,
-      west_plains:    0x4477cc,
-      east_valley:    0xcc4422,
-      north_ruins:    0x44aa66,
-      center_dungeon: 0x553377,
-      sw_forest:      0x336633,
-      se_canyon:      0x885522,
-    };
-
-    for (const z of zones) {
-      const bc = borderColors[z.id] || 0x555555;
-      g.lineStyle(3, bc, 0.7);
-      g.strokeRect(z.x - z.w/2, z.y - z.h/2, z.w, z.h);
-    }
-
-    // Territory name labels
-    const labelColors = {
-      order_hq:       '#c8d8ff',
-      chaos_hq:       '#ffcccc',
-      nature_hq:      '#ccffdd',
-      west_plains:    '#ddffcc',
-      east_valley:    '#ffddcc',
-      north_ruins:    '#dddddd',
-      center_dungeon: '#bbaaff',
-      sw_forest:      '#aaffcc',
-      se_canyon:      '#ffccaa',
-    };
-    // Note: text is drawn with Phaser text objects in the update loop
-  }
-
-  _drawVignette() {
-    const W = this.scale.width, H = this.scale.height;
-    this.vignetteGfx.clear();
-    // Radial fade from edges
-    for (let i = 0; i < 16; i++) {
-      const alpha = (i / 16) * 0.35;
-      const inset = i * 14;
-      this.vignetteGfx.fillStyle(0x000000, alpha * (1 - i/16));
-      this.vignetteGfx.fillRect(0, 0, inset, H);
-      this.vignetteGfx.fillRect(W - inset, 0, inset, H);
-      this.vignetteGfx.fillRect(inset, 0, W - inset*2, inset);
-      this.vignetteGfx.fillRect(inset, H - inset, W - inset*2, inset);
+  if (m.type === 'goblin') {
+    const body = new THREE.Mesh(
+      new THREE.SphereGeometry(0.55, 8, 6),
+      new THREE.MeshLambertMaterial({ color: 0x22aa22 })
+    );
+    body.position.y = 0.6;
+    group.add(body);
+    const head = new THREE.Mesh(
+      new THREE.BoxGeometry(0.5, 0.4, 0.4),
+      new THREE.MeshLambertMaterial({ color: 0x33bb33 })
+    );
+    head.position.y = 1.25;
+    group.add(head);
+  } else if (m.type === 'orc') {
+    const body = new THREE.Mesh(
+      new THREE.BoxGeometry(1.2, 2.0, 0.8),
+      new THREE.MeshLambertMaterial({ color: 0xcc6622 })
+    );
+    body.position.y = 1.0;
+    group.add(body);
+    const helm = new THREE.Mesh(
+      new THREE.BoxGeometry(0.9, 0.5, 0.9),
+      new THREE.MeshLambertMaterial({ color: 0x884411 })
+    );
+    helm.position.y = 2.25;
+    group.add(helm);
+    // Shoulder guards
+    const sg = new THREE.Mesh(
+      new THREE.BoxGeometry(1.8, 0.3, 0.9),
+      new THREE.MeshLambertMaterial({ color: 0x663300 })
+    );
+    sg.position.y = 1.8;
+    group.add(sg);
+  } else if (m.type === 'skeleton') {
+    const torso = new THREE.Mesh(
+      new THREE.BoxGeometry(0.5, 0.9, 0.2),
+      new THREE.MeshLambertMaterial({ color: 0xddddcc })
+    );
+    torso.position.y = 0.9;
+    group.add(torso);
+    const skull = new THREE.Mesh(
+      new THREE.BoxGeometry(0.4, 0.4, 0.35),
+      new THREE.MeshLambertMaterial({ color: 0xeeeeee })
+    );
+    skull.position.y = 1.7;
+    group.add(skull);
+    // Arms
+    for (const side of [-1, 1]) {
+      const arm = new THREE.Mesh(
+        new THREE.BoxGeometry(0.12, 0.7, 0.12),
+        new THREE.MeshLambertMaterial({ color: 0xddddcc })
+      );
+      arm.position.set(side * 0.35, 0.85, 0);
+      group.add(arm);
+      // Leg
+      const leg = new THREE.Mesh(
+        new THREE.BoxGeometry(0.14, 0.8, 0.14),
+        new THREE.MeshLambertMaterial({ color: 0xddddcc })
+      );
+      leg.position.set(side * 0.15, 0.35, 0);
+      group.add(leg);
     }
   }
 
-  update(time, delta) {
-    const dt = delta / 1000;
+  // HP bar
+  const hpBg = new THREE.Mesh(
+    new THREE.PlaneGeometry(1.4, 0.18),
+    new THREE.MeshBasicMaterial({ color: 0x440000, depthTest: false })
+  );
+  hpBg.renderOrder = 997;
+  const hpFg = new THREE.Mesh(
+    new THREE.PlaneGeometry(1.4, 0.18),
+    new THREE.MeshBasicMaterial({ color: 0xdd3333, depthTest: false })
+  );
+  hpFg.renderOrder = 998;
+  hpFg.position.z = 0.01;
+  const hpGroup = new THREE.Group();
+  hpGroup.add(hpBg);
+  hpGroup.add(hpFg);
+  hpGroup.position.y = m.type === 'orc' ? 2.8 : m.type === 'goblin' ? 1.8 : 2.2;
+  group.add(hpGroup);
+  group.userData.hpFg = hpFg;
+  group.userData.hpGroup = hpGroup;
 
-    // ── Input / movement ──────────────────────────────────────────────────────
-    if (myId && localPlayer && !localPlayer.dead) {
-      const speed = this._getLocalSpeed();
-      let dx = 0, dy = 0;
+  return group;
+}
 
-      if (this.keys.left.isDown  || this.keys.leftArr.isDown)  dx -= 1;
-      if (this.keys.right.isDown || this.keys.rightArr.isDown) dx += 1;
-      if (this.keys.up.isDown    || this.keys.upArr.isDown)    dy -= 1;
-      if (this.keys.down.isDown  || this.keys.downArr.isDown)  dy += 1;
-
-      if (dx !== 0 || dy !== 0) {
-        const mag = Math.sqrt(dx*dx + dy*dy);
-        localPlayer.x = Math.max(0, Math.min(MAP_W, localPlayer.x + (dx/mag) * speed * dt));
-        localPlayer.y = Math.max(0, Math.min(MAP_H, localPlayer.y + (dy/mag) * speed * dt));
-        localPlayer.facing = Math.atan2(dy, dx);
-      }
-
-      // Send position to server at ~20 TPS max
-      const now = Date.now();
-      if (now - this.lastMoveTime > 50 &&
-          (Math.abs(localPlayer.x - this.lastSentX) > 1 || Math.abs(localPlayer.y - this.lastSentY) > 1)) {
-        socket.emit('player_move', { x: localPlayer.x, y: localPlayer.y, facing: localPlayer.facing });
-        this.lastSentX = localPlayer.x;
-        this.lastSentY = localPlayer.y;
-        this.lastMoveTime = now;
-      }
-
-      // Update camera follow target
-      this.playerFollowTarget.x = localPlayer.x;
-      this.playerFollowTarget.y = localPlayer.y;
+// ── Weapon (first-person) models ───────────────────────────────────────────────
+function buildWeaponMesh(cls) {
+  if (cls === 'warrior') {
+    const g = new THREE.Group();
+    const blade = new THREE.Mesh(
+      new THREE.BoxGeometry(0.1, 0.9, 0.08),
+      new THREE.MeshLambertMaterial({ color: 0xccccdd })
+    );
+    blade.position.y = 0.25;
+    g.add(blade);
+    const guard = new THREE.Mesh(
+      new THREE.BoxGeometry(0.45, 0.07, 0.12),
+      new THREE.MeshLambertMaterial({ color: 0x887744 })
+    );
+    guard.position.y = -0.15;
+    g.add(guard);
+    const grip = new THREE.Mesh(
+      new THREE.BoxGeometry(0.09, 0.35, 0.09),
+      new THREE.MeshLambertMaterial({ color: 0x553311 })
+    );
+    grip.position.y = -0.38;
+    g.add(grip);
+    return g;
+  } else if (cls === 'mage') {
+    const g = new THREE.Group();
+    const staff = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.04, 0.055, 1.1, 8),
+      new THREE.MeshLambertMaterial({ color: 0x6633aa })
+    );
+    staff.position.y = 0.05;
+    g.add(staff);
+    const orb = new THREE.Mesh(
+      new THREE.SphereGeometry(0.13, 10, 8),
+      new THREE.MeshBasicMaterial({ color: 0xcc66ff })
+    );
+    orb.position.y = 0.65;
+    g.add(orb);
+    return g;
+  } else {
+    // ranger bow
+    const g = new THREE.Group();
+    const handle = new THREE.Mesh(
+      new THREE.BoxGeometry(0.06, 0.75, 0.06),
+      new THREE.MeshLambertMaterial({ color: 0x774422 })
+    );
+    g.add(handle);
+    // Bow limbs (two angled boxes)
+    for (const side of [-1, 1]) {
+      const limb = new THREE.Mesh(
+        new THREE.BoxGeometry(0.05, 0.45, 0.05),
+        new THREE.MeshLambertMaterial({ color: 0x885533 })
+      );
+      limb.position.y = side * 0.48;
+      limb.rotation.z = side * 0.28;
+      g.add(limb);
     }
-
-    // ── Render all entities ───────────────────────────────────────────────────
-    const g = this.worldGfx;
-    g.clear();
-
-    this._renderTerritories(g);
-    this._renderMonsters(g);
-    this._renderProjectiles(g);
-    this._renderPlayers(g);
-    this._renderDamageNumbers(g, dt);
-  }
-
-  _getLocalSpeed() {
-    if (!localPlayer) return 160;
-    const cls = localPlayer.class;
-    return cls === 'warrior' ? 160 : cls === 'mage' ? 190 : 210;
-  }
-
-  // ── Territory rendering ────────────────────────────────────────────────────
-  _renderTerritories(g) {
-    const now = Date.now();
-
-    for (const t of gameState.territories) {
-      const td = TERR_BY_ID[t.id];
-      if (!td) continue;
-
-      const ownerColor = t.owner ? FACTION_COLOR[t.owner] : 0x666666;
-
-      // Dashed capture circle
-      const segments = 24;
-      const R = 100;
-      g.lineStyle(2, ownerColor, 0.6);
-      for (let i = 0; i < segments; i++) {
-        if (i % 2 === 0) {
-          const a1 = (i / segments) * Math.PI * 2;
-          const a2 = ((i + 0.8) / segments) * Math.PI * 2;
-          g.beginPath();
-          g.arc(t.x, t.y, R, a1, a2);
-          g.strokePath();
-        }
-      }
-
-      // Capture progress arc
-      if (t.capturingFaction && t.captureProgress > 0) {
-        const capColor = FACTION_COLOR[t.capturingFaction] || 0xffffff;
-        g.lineStyle(5, capColor, 0.8);
-        g.beginPath();
-        g.arc(t.x, t.y, R - 6, -Math.PI / 2, -Math.PI / 2 + t.captureProgress * Math.PI * 2);
-        g.strokePath();
-      }
-
-      // Contested: flashing red/white ring
-      if (t.contestedBy && t.contestedBy.length > 1) {
-        const flash = Math.floor(now / 300) % 2 === 0;
-        g.lineStyle(3, flash ? 0xff3333 : 0xffffff, 0.9);
-        g.beginPath();
-        g.arc(t.x, t.y, R + 4, 0, Math.PI * 2);
-        g.strokePath();
-      }
-
-      // Flag/banner at center
-      const flagColor = t.owner ? FACTION_COLOR[t.owner] : 0x666666;
-      g.fillStyle(flagColor, 0.85);
-      g.fillRect(t.x - 3, t.y - 6, 6, 12);
-      // Pole
-      g.fillStyle(0x888888, 0.9);
-      g.fillRect(t.x - 1, t.y - 10, 2, 20);
-    }
-  }
-
-  // ── Monster rendering ──────────────────────────────────────────────────────
-  _renderMonsters(g) {
-    for (const mon of gameState.monsters) {
-      const alpha = mon.aggro ? 1.0 : 0.85;
-
-      if (mon.type === 'goblin') {
-        // Green diamond
-        g.fillStyle(mon.aggro ? 0xff4422 : 0x44bb44, alpha);
-        g.beginPath();
-        g.moveTo(mon.x, mon.y - 12);
-        g.lineTo(mon.x + 10, mon.y);
-        g.lineTo(mon.x, mon.y + 12);
-        g.lineTo(mon.x - 10, mon.y);
-        g.closePath();
-        g.fillPath();
-        g.lineStyle(1, 0x227722, 0.8);
-        g.strokePath();
-      } else if (mon.type === 'orc') {
-        // Orange rectangle
-        g.fillStyle(mon.aggro ? 0xff3311 : 0xcc6622, alpha);
-        g.fillRect(mon.x - 10, mon.y - 11, 20, 22);
-        g.lineStyle(1, 0x884411, 0.8);
-        g.strokeRect(mon.x - 10, mon.y - 11, 20, 22);
-      } else if (mon.type === 'skeleton') {
-        // White X
-        const sc = 14;
-        g.lineStyle(3, mon.aggro ? 0xff8888 : 0xeeeeee, alpha);
-        g.beginPath();
-        g.moveTo(mon.x - sc/2, mon.y - sc/2);
-        g.lineTo(mon.x + sc/2, mon.y + sc/2);
-        g.strokePath();
-        g.beginPath();
-        g.moveTo(mon.x + sc/2, mon.y - sc/2);
-        g.lineTo(mon.x - sc/2, mon.y + sc/2);
-        g.strokePath();
-      }
-
-      // HP bar
-      const barW = 28, barH = 4;
-      const hpPct = Math.max(0, mon.hp / mon.maxHp);
-      g.fillStyle(0x330000, 0.9);
-      g.fillRect(mon.x - barW/2, mon.y - 22, barW, barH);
-      g.fillStyle(0xdd3333, 0.9);
-      g.fillRect(mon.x - barW/2, mon.y - 22, barW * hpPct, barH);
-    }
-  }
-
-  // ── Projectile rendering ───────────────────────────────────────────────────
-  _renderProjectiles(g) {
-    for (const proj of gameState.projectiles) {
-      if (proj.type === 'magic') {
-        // Glowing purple circle
-        g.fillStyle(0xcc44ff, 0.35);
-        g.beginPath();
-        g.arc(proj.x, proj.y, 14, 0, Math.PI * 2);
-        g.fillPath();
-        g.fillStyle(0xdd66ff, 0.9);
-        g.beginPath();
-        g.arc(proj.x, proj.y, 7, 0, Math.PI * 2);
-        g.fillPath();
-        g.fillStyle(0xffffff, 0.95);
-        g.beginPath();
-        g.arc(proj.x, proj.y, 3, 0, Math.PI * 2);
-        g.fillPath();
-      } else if (proj.type === 'arrow') {
-        // Arrow line
-        const spd = Math.sqrt((proj.vx||1)**2 + (proj.vy||0)**2) || 1;
-        const nx = (proj.vx||1) / spd;
-        const ny = (proj.vy||0) / spd;
-        const len = 14;
-        g.lineStyle(2, 0xaa7733, 1.0);
-        g.beginPath();
-        g.moveTo(proj.x - nx * len/2, proj.y - ny * len/2);
-        g.lineTo(proj.x + nx * len/2, proj.y + ny * len/2);
-        g.strokePath();
-        // Arrow head
-        g.fillStyle(0x886622, 1.0);
-        g.fillTriangle(
-          proj.x + nx * len/2,              proj.y + ny * len/2,
-          proj.x + nx * (len/2 - 5) - ny*3, proj.y + ny * (len/2 - 5) + nx*3,
-          proj.x + nx * (len/2 - 5) + ny*3, proj.y + ny * (len/2 - 5) - nx*3
-        );
-      }
-    }
-  }
-
-  // ── Player rendering ───────────────────────────────────────────────────────
-  _renderPlayers(g) {
-    // Merge server state with local prediction
-    const allPlayers = gameState.players.map(p => {
-      if (p.id === myId && localPlayer && !localPlayer.dead) {
-        return { ...p, x: localPlayer.x, y: localPlayer.y, hp: localPlayer.hp, dead: localPlayer.dead };
-      }
-      return p;
-    });
-
-    for (const p of allPlayers) {
-      const isLocal = (p.id === myId);
-      const alpha   = p.dead ? 0.3 : 1.0;
-      const fcolor  = p.dead ? 0xdddddd : (FACTION_COLOR[p.faction] || 0x888888);
-      const R       = 18;
-
-      // Glow for mage
-      if (p.class === 'mage' && !p.dead) {
-        g.fillStyle(fcolor, 0.18);
-        g.beginPath();
-        g.arc(p.x, p.y, R + 10, 0, Math.PI * 2);
-        g.fillPath();
-      }
-
-      // White outline
-      g.fillStyle(0xffffff, p.dead ? 0.15 : 0.5);
-      g.beginPath();
-      g.arc(p.x, p.y, R + 1.5, 0, Math.PI * 2);
-      g.fillPath();
-
-      // Body circle
-      g.fillStyle(fcolor, alpha);
-      g.beginPath();
-      g.arc(p.x, p.y, R, 0, Math.PI * 2);
-      g.fillPath();
-
-      // Local player yellow ring
-      if (isLocal) {
-        const blink = Math.floor(Date.now() / 600) % 2 === 0;
-        g.lineStyle(2.5, blink ? 0xffee00 : 0xffcc00, 0.9);
-        g.beginPath();
-        g.arc(p.x, p.y, R + 5, 0, Math.PI * 2);
-        g.strokePath();
-      }
-
-      // Class-specific detail
-      if (!p.dead) {
-        const f = p.facing || 0;
-        const cos = Math.cos(f), sin = Math.sin(f);
-        this._drawClassDetail(g, p, cos, sin, fcolor);
-      }
-
-      // HP bar
-      const barW = 30, barH = 4;
-      const hpPct = Math.max(0, Math.min(1, p.hp / p.maxHp));
-      g.fillStyle(0x440000, 0.9);
-      g.fillRect(p.x - barW/2, p.y - R - 14, barW, barH);
-      g.fillStyle(hpPct > 0.5 ? 0x33cc33 : hpPct > 0.25 ? 0xccaa00 : 0xcc3300, 0.95);
-      g.fillRect(p.x - barW/2, p.y - R - 14, barW * hpPct, barH);
-    }
-  }
-
-  _drawClassDetail(g, p, cos, sin, fcolor) {
-    const darkerColor = this._darkenColor(fcolor, 0.5);
-    if (p.class === 'warrior') {
-      // Sword (rectangle + triangle tip)
-      g.fillStyle(0xccccdd, 1.0);
-      // Blade: rotated rect
-      const blen = 20, bwid = 4;
-      const bx = p.x + cos * 10, by = p.y + sin * 10;
-      g.fillPoints([
-        { x: bx + cos*blen/2 - sin*bwid/2, y: by + sin*blen/2 + cos*bwid/2 },
-        { x: bx + cos*blen/2 + sin*bwid/2, y: by + sin*blen/2 - cos*bwid/2 },
-        { x: bx - cos*blen/2 + sin*bwid/2, y: by - sin*blen/2 - cos*bwid/2 },
-        { x: bx - cos*blen/2 - sin*bwid/2, y: by - sin*blen/2 + cos*bwid/2 },
-      ], true);
-      // Guard
-      g.fillStyle(0x887744, 1.0);
-      const gx = p.x + cos * 6, gy = p.y + sin * 6;
-      g.fillRect(gx - sin*7 - cos*2, gy + cos*7 - sin*2, 4, 14);
-
-    } else if (p.class === 'mage') {
-      // 4-pointed star
-      g.fillStyle(0xeeccff, 1.0);
-      const pts = [];
-      for (let i = 0; i < 8; i++) {
-        const angle = p.facing + (i * Math.PI / 4) - Math.PI/8;
-        const r = i % 2 === 0 ? 14 : 5;
-        pts.push({ x: p.x + Math.cos(angle) * r, y: p.y + Math.sin(angle) * r });
-      }
-      g.fillPoints(pts, true);
-      // Center crystal
-      g.fillStyle(0xffffff, 0.9);
-      g.beginPath();
-      g.arc(p.x, p.y, 4, 0, Math.PI * 2);
-      g.fillPath();
-
-    } else if (p.class === 'ranger') {
-      // Bow arc
-      g.lineStyle(2.5, 0x886633, 1.0);
-      const bowR = 11, span = Math.PI * 0.7;
-      const bAngle = p.facing;
-      g.beginPath();
-      g.arc(p.x + cos*4, p.y + sin*4, bowR, bAngle - span/2 + Math.PI, bAngle + span/2 + Math.PI);
-      g.strokePath();
-      // Arrow on bow
-      g.lineStyle(1.5, 0xaa8855, 1.0);
-      g.beginPath();
-      g.moveTo(p.x - cos*6, p.y - sin*6);
-      g.lineTo(p.x + cos*14, p.y + sin*14);
-      g.strokePath();
-    }
-
-    // Attack flash
-    if (p.attacking) {
-      g.fillStyle(0xffffff, 0.45);
-      g.beginPath();
-      g.arc(p.x + cos * 20, p.y + sin * 20, 14, 0, Math.PI * 2);
-      g.fillPath();
-    }
-  }
-
-  _darkenColor(hex, factor) {
-    const r = ((hex >> 16) & 0xff) * factor;
-    const g = ((hex >> 8)  & 0xff) * factor;
-    const b = (hex & 0xff) * factor;
-    return (Math.round(r) << 16) | (Math.round(g) << 8) | Math.round(b);
-  }
-
-  // ── Damage numbers ─────────────────────────────────────────────────────────
-  _renderDamageNumbers(g, dt) {
-    const seen = new Set();
-    damageNumbers = damageNumbers.filter(dn => {
-      if (seen.has(dn.id)) return false;
-      seen.add(dn.id);
-      dn.y  += dn.vy * dt;
-      dn.alpha -= dt / 1.5;
-      return dn.alpha > 0;
-    });
-
-    // Use Phaser text for damage numbers is expensive; use Graphics + bitmap approach
-    // Actually draw them as simple stroked rects... better: use the camera to render text
-    // We'll use a separate text approach via a pooled set
-    this._renderDamageTexts(dt);
-  }
-
-  _renderDamageTexts(dt) {
-    // We handle text rendering by updating cached Phaser Text objects
-    // Clean up old ones
-    for (const [id, obj] of Object.entries(this._dmgTextPool || {})) {
-      if (!damageNumbers.find(dn => dn.id === id)) {
-        obj.destroy();
-        delete this._dmgTextPool[id];
-      }
-    }
-    if (!this._dmgTextPool) this._dmgTextPool = {};
-
-    for (const dn of damageNumbers) {
-      if (!this._dmgTextPool[dn.id]) {
-        this._dmgTextPool[dn.id] = this.add.text(dn.x, dn.y, String(dn.amount), {
-          fontSize: '14px',
-          fontFamily: 'Georgia, serif',
-          color: '#ffee44',
-          stroke: '#000000',
-          strokeThickness: 3,
-          fontStyle: 'bold',
-        }).setDepth(8);
-      } else {
-        const t = this._dmgTextPool[dn.id];
-        t.x = dn.x;
-        t.y = dn.y;
-        t.setAlpha(Math.max(0, dn.alpha));
-      }
-    }
+    // Bowstring
+    const strGeo = new THREE.BufferGeometry();
+    const strPts = new Float32Array([0, 0.45, -0.18, 0, 0, -0.22, 0, -0.45, -0.18]);
+    strGeo.setAttribute('position', new THREE.BufferAttribute(strPts, 3));
+    const strLine = new THREE.Line(strGeo, new THREE.LineBasicMaterial({ color: 0xddccaa }));
+    g.add(strLine);
+    return g;
   }
 }
 
-// ── Territory name labels (drawn as Phaser text objects on world) ─────────────
-// These are created once after scene is ready
-function addTerritoryLabels(scene) {
-  const labelStyle = {
-    fontSize: '13px',
-    fontFamily: 'Georgia, serif',
-    color: '#ffffff',
-    stroke: '#000000',
-    strokeThickness: 3,
-    alpha: 0.7,
-  };
+// ── Territory pillar ───────────────────────────────────────────────────────────
+function buildTerritoryPillar(td, owner) {
+  const color = owner ? (FACTION_HEX[owner] || 0x666666) : 0x666666;
+  const pillar = new THREE.Mesh(
+    new THREE.CylinderGeometry(1.8, 2.2, 20, 8),
+    new THREE.MeshBasicMaterial({ color })
+  );
+  pillar.position.set(td.x, 10, td.z);
+
+  const light = new THREE.PointLight(color, 1.2, 120);
+  light.position.set(td.x, 22, td.z);
+
+  return { pillar, light };
+}
+
+// ── HQ building ────────────────────────────────────────────────────────────────
+function buildHQCastle(x, z, factionColor) {
+  const group = new THREE.Group();
+  const mat = new THREE.MeshLambertMaterial({ color: factionColor });
+  const stoneMat = new THREE.MeshLambertMaterial({ color: 0x554444 });
+
+  // Main keep
+  const keep = new THREE.Mesh(new THREE.BoxGeometry(60, 40, 60), mat);
+  keep.position.set(0, 20, 0);
+  group.add(keep);
+
+  // 4 corner towers
+  const towerOffsets = [[-40, -40], [40, -40], [-40, 40], [40, 40]];
+  for (const [ox, oz] of towerOffsets) {
+    const tower = new THREE.Mesh(new THREE.BoxGeometry(15, 60, 15), stoneMat);
+    tower.position.set(ox, 30, oz);
+    group.add(tower);
+  }
+
+  // Walls (North, East, West — leave south open for gate)
+  const wallMat = new THREE.MeshLambertMaterial({ color: 0x443333 });
+  const wallN = new THREE.Mesh(new THREE.BoxGeometry(80, 20, 10), wallMat);
+  wallN.position.set(0, 10, -40);
+  group.add(wallN);
+  const wallE = new THREE.Mesh(new THREE.BoxGeometry(10, 20, 60), wallMat);
+  wallE.position.set(40, 10, 0);
+  group.add(wallE);
+  const wallW = new THREE.Mesh(new THREE.BoxGeometry(10, 20, 60), wallMat);
+  wallW.position.set(-40, 10, 0);
+  group.add(wallW);
+  // South wall split (gate gap)
+  const wallS1 = new THREE.Mesh(new THREE.BoxGeometry(25, 20, 10), wallMat);
+  wallS1.position.set(-27, 10, 40);
+  group.add(wallS1);
+  const wallS2 = new THREE.Mesh(new THREE.BoxGeometry(25, 20, 10), wallMat);
+  wallS2.position.set(27, 10, 40);
+  group.add(wallS2);
+
+  group.position.set(x, 0, z);
+  return group;
+}
+
+// ── World creation ─────────────────────────────────────────────────────────────
+function buildWorld() {
+  // Ground
+  const groundGeo = new THREE.PlaneGeometry(2000, 2000);
+  const groundMat = new THREE.MeshLambertMaterial({ color: 0x2a4a1a });
+  const ground = new THREE.Mesh(groundGeo, groundMat);
+  ground.rotation.x = -Math.PI / 2;
+  ground.position.y = 0;
+  scene.add(ground);
+
+  // Territory zone ground overlays
+  const zoneData = [
+    { id: 'order_hq',       x: -800, z:   0, w: 350, d: 350, color: 0xc8a050 },
+    { id: 'chaos_hq',       x:  800, z:   0, w: 350, d: 350, color: 0x3a1010 },
+    { id: 'nature_hq',      x:    0, z: -850, w: 350, d: 350, color: 0x2d8a2d },
+    { id: 'center_dungeon', x:    0, z:   0, w: 400, d: 400, color: 0x0a0a1a },
+    { id: 'west_plains',    x: -500, z:   0, w: 300, d: 300, color: 0x5a7a30 },
+    { id: 'east_valley',    x:  500, z:   0, w: 300, d: 300, color: 0x7a3010 },
+    { id: 'north_ruins',    x:    0, z: -350, w: 300, d: 300, color: 0x4a4a40 },
+    { id: 'sw_forest',      x: -500, z: 350, w: 300, d: 300, color: 0x1a5a1a },
+    { id: 'se_canyon',      x:  500, z: 350, w: 300, d: 300, color: 0x6a2808 },
+  ];
+
+  for (const z of zoneData) {
+    const zonePlane = new THREE.Mesh(
+      new THREE.PlaneGeometry(z.w, z.d),
+      new THREE.MeshLambertMaterial({ color: z.color })
+    );
+    zonePlane.rotation.x = -Math.PI / 2;
+    zonePlane.position.set(z.x, 0.01, z.z);
+    scene.add(zonePlane);
+  }
+
+  // HQ buildings
+  scene.add(buildHQCastle(-800, 0, 0x2244aa));
+  scene.add(buildHQCastle( 800, 0, 0x992222));
+  scene.add(buildHQCastle(   0, -850, 0x228833));
+
+  // Territory capture pillars (non-HQ)
   for (const td of TERRITORY_DEFS) {
-    scene.add.text(td.x, td.y + 20, td.name, labelStyle)
-      .setOrigin(0.5, 0.5)
-      .setDepth(2);
+    if (td.isHQ) continue;
+    const { pillar, light } = buildTerritoryPillar(td, null);
+    scene.add(pillar);
+    scene.add(light);
+    terrPillars[td.id] = { pillar, light };
+  }
+
+  // Boundary walls
+  const boundMat = new THREE.MeshLambertMaterial({ color: 0x1a1a22 });
+  const walls = [
+    { pos: [0, 15, -1005], size: [2010, 30, 10] },
+    { pos: [0, 15,  1005], size: [2010, 30, 10] },
+    { pos: [-1005, 15, 0], size: [10, 30, 2010] },
+    { pos: [ 1005, 15, 0], size: [10, 30, 2010] },
+  ];
+  for (const w of walls) {
+    const m = new THREE.Mesh(new THREE.BoxGeometry(...w.size), boundMat);
+    m.position.set(...w.pos);
+    scene.add(m);
+  }
+
+  buildCoverObjects();
+}
+
+// ── Cover/obstacle objects ─────────────────────────────────────────────────────
+function buildCoverObjects() {
+  const stoneMat = new THREE.MeshLambertMaterial({ color: 0x5a5a6a });
+  const darkStoneMat = new THREE.MeshLambertMaterial({ color: 0x3a3a4a });
+  const brownMat = new THREE.MeshLambertMaterial({ color: 0x5a3a1a });
+  const greenMat = new THREE.MeshLambertMaterial({ color: 0x1a5a1a });
+  const foliageMat = new THREE.MeshLambertMaterial({ color: 0x2a6a2a });
+
+  // Wall cluster helper
+  function addWall(x, y, z, w, h, d, mat) {
+    const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
+    m.position.set(x, y + h / 2, z);
+    scene.add(m);
+  }
+
+  // Tree helper
+  function addTree(x, z) {
+    const trunk = new THREE.Mesh(new THREE.CylinderGeometry(0.4, 0.6, 6, 6), brownMat);
+    trunk.position.set(x, 3, z);
+    scene.add(trunk);
+    const foliage = new THREE.Mesh(new THREE.BoxGeometry(5, 6, 5), foliageMat);
+    foliage.position.set(x, 8, z);
+    scene.add(foliage);
+  }
+
+  // Rock formation helper
+  function addRock(x, z, scale) {
+    const s = scale || 1;
+    const r1 = new THREE.Mesh(new THREE.BoxGeometry(3 * s, 2.5 * s, 3 * s), stoneMat);
+    r1.position.set(x, 1.25 * s, z);
+    r1.rotation.y = Math.random() * Math.PI;
+    scene.add(r1);
+    const r2 = new THREE.Mesh(new THREE.BoxGeometry(2 * s, 3 * s, 2 * s), stoneMat);
+    r2.position.set(x + 1.5 * s, 1.5 * s, z - 1 * s);
+    r2.rotation.y = Math.random() * Math.PI;
+    scene.add(r2);
+  }
+
+  // -- West plains stone wall clusters
+  addWall(-580, 0,  30, 20, 4, 2, stoneMat);
+  addWall(-540, 0, -20, 2, 4, 20, stoneMat);
+  addWall(-460, 0,  50, 20, 5, 2, stoneMat);
+  addWall(-430, 0, -40, 2, 5, 16, stoneMat);
+  addWall(-520, 0,  80, 14, 3, 2, stoneMat);
+
+  // -- East valley rock clusters
+  addRock( 560,  40, 1.2);
+  addRock( 480, -30, 0.9);
+  addRock( 430,  60, 1.1);
+  addWall( 550, 0, -50, 20, 4, 2, darkStoneMat);
+  addWall( 470, 0,  80, 2, 4, 18, darkStoneMat);
+
+  // -- North ruins broken walls
+  addWall(  30, 0, -380, 22, 5, 2, darkStoneMat);
+  addWall( -40, 0, -310, 2, 4, 18, darkStoneMat);
+  addWall(  60, 0, -320, 16, 3, 2, darkStoneMat);
+  addWall( -70, 0, -380, 2, 6, 12, darkStoneMat);
+  addRock(-20, -400, 0.8);
+  addRock( 80, -340, 0.7);
+
+  // -- Center dungeon walls
+  addWall(  60, 0,  30, 2, 6, 30, darkStoneMat);
+  addWall( -60, 0, -30, 2, 6, 30, darkStoneMat);
+  addWall(  30, 0,  60, 30, 6, 2, darkStoneMat);
+  addWall( -30, 0, -60, 30, 6, 2, darkStoneMat);
+  addWall(  80, 0, -50, 2, 5, 20, darkStoneMat);
+  addWall( -80, 0,  50, 2, 5, 20, darkStoneMat);
+
+  // -- SW forest trees
+  for (let i = 0; i < 14; i++) {
+    const angle = (i / 14) * Math.PI * 2;
+    const r = 60 + Math.random() * 80;
+    addTree(-500 + Math.cos(angle) * r, 350 + Math.sin(angle) * r);
+  }
+  addWall(-470, 0, 280, 18, 4, 2, brownMat);
+  addWall(-530, 0, 400, 2, 4, 18, brownMat);
+
+  // -- SE canyon walls/rocks
+  addWall( 470, 0, 280, 18, 5, 2, darkStoneMat);
+  addWall( 530, 0, 400, 2, 5, 18, darkStoneMat);
+  addRock( 450,  300, 1.3);
+  addRock( 540,  380, 1.0);
+  addRock( 480,  420, 0.9);
+
+  // -- Scattered midfield cover
+  addWall(-200, 0, -150, 20, 4, 2, stoneMat);
+  addWall( 200, 0,  150, 20, 4, 2, stoneMat);
+  addWall(-250, 0,  200, 2, 4, 18, stoneMat);
+  addWall( 250, 0, -200, 2, 4, 18, stoneMat);
+  addRock(-150,  100, 1.0);
+  addRock( 150, -100, 1.0);
+  addRock(  50,  200, 0.8);
+  addRock( -50, -200, 0.8);
+
+  // -- Mid-route rock clusters
+  addRock(-300,   0, 1.0);
+  addRock( 300,   0, 1.0);
+  addRock(   0, -200, 0.9);
+  addRock(   0,  200, 0.9);
+  addWall(-350, 0,  80, 2, 5, 22, stoneMat);
+  addWall( 350, 0, -80, 2, 5, 22, stoneMat);
+}
+
+// ── Three.js init ─────────────────────────────────────────────────────────────
+function initThree() {
+  // Renderer
+  renderer = new THREE.WebGLRenderer({ antialias: true });
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  renderer.autoClear = true;
+  document.getElementById('game-container').appendChild(renderer.domElement);
+
+  // Main scene + fog + background
+  scene = new THREE.Scene();
+  scene.background = new THREE.Color(0x0a0a2a);
+  scene.fog = new THREE.Fog(0x0a0a2a, 200, 800);
+
+  // Lighting
+  const ambient = new THREE.AmbientLight(0x334466, 0.8);
+  scene.add(ambient);
+  const dirLight = new THREE.DirectionalLight(0xffeedd, 0.6);
+  dirLight.position.set(100, 200, 100);
+  scene.add(dirLight);
+
+  // Camera rig
+  pivot = new THREE.Object3D();
+  scene.add(pivot);
+  camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+  camera.position.y = 1.8;
+  pivot.add(camera);
+
+  // Weapon scene (rendered on top, no fog)
+  weaponScene = new THREE.Scene();
+  weaponCamera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.05, 10);
+  const wLight = new THREE.AmbientLight(0xffffff, 1.2);
+  weaponScene.add(wLight);
+
+  // Build world geometry
+  buildWorld();
+
+  // Input
+  setupInput();
+
+  // Pointer lock
+  renderer.domElement.addEventListener('click', () => {
+    if (!gameStarted) return;
+    renderer.domElement.requestPointerLock();
+  });
+  document.addEventListener('pointerlockchange', () => {
+    isPointerLocked = document.pointerLockElement === renderer.domElement;
+    const prompt = document.getElementById('lockPrompt');
+    if (isPointerLocked) {
+      prompt.classList.add('hidden');
+    } else {
+      prompt.classList.remove('hidden');
+    }
+  });
+
+  window.addEventListener('resize', () => {
+    camera.aspect = window.innerWidth / window.innerHeight;
+    camera.updateProjectionMatrix();
+    weaponCamera.aspect = window.innerWidth / window.innerHeight;
+    weaponCamera.updateProjectionMatrix();
+    renderer.setSize(window.innerWidth, window.innerHeight);
+  });
+}
+
+// ── Input setup ───────────────────────────────────────────────────────────────
+function setupInput() {
+  document.addEventListener('mousemove', e => {
+    if (!isPointerLocked) return;
+    yaw   -= e.movementX * 0.002;
+    pitch -= e.movementY * 0.002;
+    pitch  = Math.max(-1.4, Math.min(1.4, pitch));
+    pivot.rotation.y = yaw;
+    camera.rotation.x = pitch;
+  });
+
+  document.addEventListener('keydown', e => {
+    if (!gameStarted) return;
+    switch (e.code) {
+      case 'KeyW': case 'ArrowUp':    moveForward = true; break;
+      case 'KeyS': case 'ArrowDown':  moveBack    = true; break;
+      case 'KeyA': case 'ArrowLeft':  moveLeft    = true; break;
+      case 'KeyD': case 'ArrowRight': moveRight   = true; break;
+    }
+  });
+
+  document.addEventListener('keyup', e => {
+    switch (e.code) {
+      case 'KeyW': case 'ArrowUp':    moveForward = false; break;
+      case 'KeyS': case 'ArrowDown':  moveBack    = false; break;
+      case 'KeyA': case 'ArrowLeft':  moveLeft    = false; break;
+      case 'KeyD': case 'ArrowRight': moveRight   = false; break;
+    }
+  });
+
+  document.addEventListener('mousedown', e => {
+    if (e.button !== 0 || !isPointerLocked || !gameStarted) return;
+    if (!localPlayer || localPlayer.dead) return;
+    const tx = localPlayer.x + Math.sin(yaw) * 100;
+    const ty = localPlayer.z - Math.cos(yaw) * 100;
+    socket.emit('player_attack', { targetX: tx, targetY: ty });
+    playAttackAnimation();
+  });
+}
+
+// ── Attack animation ───────────────────────────────────────────────────────────
+function playAttackAnimation() {
+  weaponLurchTime = 0.3;
+}
+
+// ── Movement update ────────────────────────────────────────────────────────────
+const _moveDir = new THREE.Vector3();
+const _yawAxis = new THREE.Vector3(0, 1, 0);
+
+function updateMovement(dt) {
+  if (!localPlayer || localPlayer.dead) return;
+  const speed = localPlayer.speed || 8;
+
+  _moveDir.set(0, 0, 0);
+  if (moveForward) _moveDir.z -= 1;
+  if (moveBack)    _moveDir.z += 1;
+  if (moveLeft)    _moveDir.x -= 1;
+  if (moveRight)   _moveDir.x += 1;
+
+  if (_moveDir.length() > 0) {
+    _moveDir.normalize();
+    _moveDir.applyAxisAngle(_yawAxis, yaw);
+    localPlayer.x += _moveDir.x * speed * dt;
+    localPlayer.z += _moveDir.z * speed * dt;
+    localPlayer.x  = Math.max(-990, Math.min(990, localPlayer.x));
+    localPlayer.z  = Math.max(-990, Math.min(990, localPlayer.z));
+  }
+
+  pivot.position.set(localPlayer.x, 0, localPlayer.z);
+
+  const now = Date.now();
+  if (now - lastMoveSent > 50) {
+    socket.emit('player_move', { x: localPlayer.x, y: localPlayer.z, facing: yaw });
+    lastMoveSent = now;
   }
 }
 
-// ── Phaser config + boot ──────────────────────────────────────────────────────
-const phaserConfig = {
-  type: Phaser.AUTO,
-  width: window.innerWidth,
-  height: window.innerHeight,
-  backgroundColor: '#0d0d14',
-  parent: 'game-container',
-  scene: MainScene,
-  scale: {
-    mode: Phaser.Scale.RESIZE,
-    autoCenter: Phaser.Scale.CENTER_BOTH,
-  },
-  callbacks: {
-    postBoot(game) {
-      const scene = game.scene.getScene('MainScene');
-      // Wait for scene ready
-      scene.events.once('create', () => {
-        addTerritoryLabels(scene);
-        scene._dmgTextPool = {};
+// ── Weapon bob + lurch ─────────────────────────────────────────────────────────
+function updateWeapon(dt, time) {
+  if (!weaponMesh) return;
+
+  const isMoving = moveForward || moveBack || moveLeft || moveRight;
+  weaponBob += dt;
+
+  const bobY = isMoving ? Math.sin(weaponBob * 8) * 0.022 : Math.sin(weaponBob * 1.5) * 0.006;
+  const bobX = isMoving ? Math.sin(weaponBob * 4) * 0.01 : 0;
+
+  let lurchZ = 0;
+  if (weaponLurchTime > 0) {
+    weaponLurchTime -= dt;
+    const t = 1 - (weaponLurchTime / 0.3);
+    lurchZ = t < 0.5 ? -t * 0.18 : -(1 - t) * 0.18;
+  }
+
+  weaponMesh.position.set(0.28 + bobX, -0.32 + bobY, -0.45 + lurchZ);
+}
+
+// ── Update remote players ─────────────────────────────────────────────────────
+function updatePlayerMeshes() {
+  const seen = new Set();
+
+  for (const p of gameState.players) {
+    if (p.id === myId) continue;
+    seen.add(p.id);
+
+    if (!playerMeshes[p.id]) {
+      const g = buildPlayerGroup(p);
+      scene.add(g);
+      playerMeshes[p.id] = g;
+    }
+
+    const g = playerMeshes[p.id];
+    g.position.set(p.x, 0, p.y);
+    g.rotation.y = -(p.facing || 0);
+    g.visible = !p.dead;
+
+    // Update HP bar scale
+    const hpBar = g.userData.hpBar;
+    if (hpBar) {
+      const pct = Math.max(0, Math.min(1, p.hp / p.maxHp));
+      hpBar.scale.x = pct;
+      hpBar.position.x = -(1 - pct) * 0.7;
+      hpBar.material.color.setHex(pct > 0.5 ? 0x33cc33 : pct > 0.25 ? 0xccaa00 : 0xcc3300);
+    }
+
+    // Billboard labels toward camera
+    const label = g.children.find(c => c.geometry && c.geometry.type === 'PlaneGeometry' && c.renderOrder === 999);
+    if (label) {
+      const wp = new THREE.Vector3();
+      g.getWorldPosition(wp);
+      label.lookAt(pivot.position.x, wp.y + 2.9, pivot.position.z);
+    }
+    const hpBg = g.userData.hpBarBg;
+    if (hpBg) {
+      const wp2 = new THREE.Vector3();
+      g.getWorldPosition(wp2);
+      const dir = new THREE.Vector3(pivot.position.x - wp2.x, 0, pivot.position.z - wp2.z).normalize();
+      const angle = Math.atan2(dir.x, dir.z);
+      const hpG = g.children.find(c => c === hpBar || c === hpBg);
+      g.children.forEach(c => {
+        if (c.renderOrder >= 997) c.rotation.y = angle - g.rotation.y;
       });
     }
   }
-};
 
-// ── Kickoff ──────────────────────────────────────────────────────────────────
-window.addEventListener('DOMContentLoaded', () => {
-  initSocket();
-  const game = new Phaser.Game(phaserConfig);
+  // Remove disconnected players
+  for (const id of Object.keys(playerMeshes)) {
+    if (!seen.has(id)) {
+      scene.remove(playerMeshes[id]);
+      delete playerMeshes[id];
+    }
+  }
+}
 
-  window.addEventListener('resize', () => {
-    game.scale.resize(window.innerWidth, window.innerHeight);
-    const scene = game.scene.getScene('MainScene');
-    if (scene && scene.vignetteGfx) scene._drawVignette();
+// ── Update monster meshes ──────────────────────────────────────────────────────
+function updateMonsterMeshes() {
+  const seen = new Set();
+
+  for (const m of gameState.monsters) {
+    seen.add(m.id);
+
+    if (!monsterMeshes[m.id]) {
+      const g = buildMonsterGroup(m);
+      scene.add(g);
+      monsterMeshes[m.id] = g;
+    }
+
+    const g = monsterMeshes[m.id];
+    g.position.set(m.x, 0, m.y);
+
+    // Update HP bar
+    const hpFg = g.userData.hpFg;
+    if (hpFg) {
+      const pct = Math.max(0, Math.min(1, m.hp / m.maxHp));
+      hpFg.scale.x = pct;
+      hpFg.position.x = -(1 - pct) * 0.7;
+    }
+
+    // Billboard HP group toward camera
+    const hpGroup = g.userData.hpGroup;
+    if (hpGroup) {
+      const dir = new THREE.Vector3(pivot.position.x - g.position.x, 0, pivot.position.z - g.position.z);
+      if (dir.length() > 0.01) {
+        dir.normalize();
+        hpGroup.rotation.y = Math.atan2(dir.x, dir.z);
+      }
+    }
+  }
+
+  for (const id of Object.keys(monsterMeshes)) {
+    if (!seen.has(id)) {
+      scene.remove(monsterMeshes[id]);
+      delete monsterMeshes[id];
+    }
+  }
+}
+
+// ── Update projectile meshes ───────────────────────────────────────────────────
+function updateProjectileMeshes() {
+  const seen = new Set();
+
+  for (const proj of gameState.projectiles) {
+    seen.add(proj.id);
+
+    if (!projMeshes[proj.id]) {
+      let mesh;
+      if (proj.type === 'magic') {
+        mesh = new THREE.Mesh(
+          new THREE.SphereGeometry(0.35, 8, 6),
+          new THREE.MeshBasicMaterial({ color: 0x9933ff })
+        );
+        const pLight = new THREE.PointLight(0x9933ff, 1.5, 20);
+        pLight.position.copy(mesh.position);
+        mesh.add(pLight);
+      } else {
+        mesh = new THREE.Mesh(
+          new THREE.BoxGeometry(0.08, 0.08, 0.6),
+          new THREE.MeshLambertMaterial({ color: 0x886633 })
+        );
+      }
+      scene.add(mesh);
+      projMeshes[proj.id] = mesh;
+    }
+
+    const mesh = projMeshes[proj.id];
+    mesh.position.set(proj.x, 1.6, proj.y);
+
+    // Orient arrow to velocity
+    if (proj.type === 'arrow') {
+      const angle = Math.atan2(proj.vx, proj.vy);
+      mesh.rotation.y = angle;
+    }
+  }
+
+  for (const id of Object.keys(projMeshes)) {
+    if (!seen.has(id)) {
+      scene.remove(projMeshes[id]);
+      delete projMeshes[id];
+    }
+  }
+}
+
+// ── Update territory pillars ───────────────────────────────────────────────────
+function updateTerritoryPillars() {
+  for (const t of gameState.territories) {
+    if (t.isHQ || !terrPillars[t.id]) continue;
+    const { pillar, light } = terrPillars[t.id];
+    const color = t.owner ? (FACTION_HEX[t.owner] || 0x666666) : 0x666666;
+    pillar.material.color.setHex(color);
+    light.color.setHex(color);
+
+    // Capture glow intensity
+    if (t.capturingFaction && t.captureProgress > 0) {
+      light.intensity = 1.2 + Math.sin(Date.now() * 0.005) * 0.6;
+    } else {
+      light.intensity = 1.2;
+    }
+  }
+}
+
+// ── Damage numbers ─────────────────────────────────────────────────────────────
+function spawnDamageNumber(worldX, worldY, amount) {
+  const el = document.createElement('div');
+  el.className = 'dmg-number';
+  el.textContent = String(amount);
+  el.style.color = amount >= 30 ? '#ff6644' : '#ffee44';
+  document.body.appendChild(el);
+
+  activeDmgEls.push({
+    el,
+    worldX,
+    worldZ: worldY,
+    screenY: 0,
+    vy: -80,
+    life: 1.5,
+    maxLife: 1.5,
+  });
+}
+
+const _projVec = new THREE.Vector3();
+const _projVec2 = new THREE.Vector2();
+
+function updateDamageNumbers(dt) {
+  for (let i = activeDmgEls.length - 1; i >= 0; i--) {
+    const d = activeDmgEls[i];
+    d.life -= dt;
+    if (d.life <= 0) {
+      if (d.el.parentNode) d.el.parentNode.removeChild(d.el);
+      activeDmgEls.splice(i, 1);
+      continue;
+    }
+
+    // Project world position to screen
+    _projVec.set(d.worldX, 2.5, d.worldZ);
+    _projVec.project(camera);
+
+    if (_projVec.z > 1) {
+      d.el.style.display = 'none';
+      continue;
+    }
+
+    const screenX = (_projVec.x  * 0.5 + 0.5) * window.innerWidth;
+    const screenY = (-_projVec.y * 0.5 + 0.5) * window.innerHeight;
+    d.screenYOffset = (d.screenYOffset || 0) + d.vy * dt;
+
+    const alpha = Math.max(0, d.life / d.maxLife);
+    d.el.style.display = 'block';
+    d.el.style.left = screenX + 'px';
+    d.el.style.top  = (screenY + d.screenYOffset) + 'px';
+    d.el.style.opacity = alpha;
+    d.el.style.fontSize = (16 + (1 - alpha) * 8) + 'px';
+  }
+}
+
+// ── Socket init ───────────────────────────────────────────────────────────────
+function initSocket() {
+  socket = io();
+
+  socket.on('connect', () => {
+    showNotification('Connected to Dungeon Front', '#aaaaff', 3000);
   });
 
-  // Minimap animation loop (outside Phaser)
-  setInterval(updateMinimapCanvas, 200);
+  socket.on('disconnect', () => {
+    showNotification('Disconnected from server', '#ff6666', 5000);
+  });
+
+  socket.on('joined', ({ id, player }) => {
+    myId = id;
+    localPlayer = { ...player, z: player.y };
+    localPlayer.x = player.x;
+    localPlayer.z = player.y;
+
+    pivot.position.set(localPlayer.x, 0, localPlayer.z);
+
+    document.getElementById('lobby').classList.add('hidden');
+    document.getElementById('hud').classList.remove('hidden');
+    document.getElementById('playerInfo').classList.remove('hidden');
+    gameStarted = true;
+
+    // Build weapon
+    if (weaponMesh) { weaponScene.remove(weaponMesh); }
+    weaponMesh = buildWeaponMesh(localPlayer.class);
+    weaponMesh.position.set(0.28, -0.32, -0.45);
+    weaponScene.add(weaponMesh);
+
+    updatePlayerInfoHUD();
+    showNotification('Welcome to Dungeon Front!', '#ffdd88', 4000);
+  });
+
+  socket.on('game_state', state => {
+    gameState = state;
+
+    if (myId) {
+      const serverMe = state.players.find(p => p.id === myId);
+      if (serverMe) {
+        if (!localPlayer) localPlayer = { ...serverMe, z: serverMe.y };
+        localPlayer.hp    = serverMe.hp;
+        localPlayer.maxHp = serverMe.maxHp;
+        localPlayer.dead  = serverMe.dead;
+        if (serverMe.dead) {
+          localPlayer.x = serverMe.x;
+          localPlayer.z = serverMe.y;
+        }
+      }
+    }
+
+    if (state.damageNumbers && state.damageNumbers.length) {
+      for (const dn of state.damageNumbers) {
+        spawnDamageNumber(dn.x, dn.y, dn.amount);
+      }
+    }
+
+    updateFactionScores();
+    updatePlayerInfoHUD();
+    updateTerritoryInfoHUD();
+    document.getElementById('onlineCount').textContent = state.players.length;
+  });
+
+  socket.on('you_died', ({ respawnIn }) => {
+    respawnCountdown = respawnIn;
+    document.getElementById('deathOverlay').classList.remove('hidden');
+    updateRespawnText();
+    if (respawnTimer) clearInterval(respawnTimer);
+    respawnTimer = setInterval(() => {
+      respawnCountdown--;
+      updateRespawnText();
+      if (respawnCountdown <= 0) {
+        clearInterval(respawnTimer);
+        respawnTimer = null;
+      }
+    }, 1000);
+  });
+
+  socket.on('respawned', ({ x, y }) => {
+    if (localPlayer) {
+      localPlayer.x = x;
+      localPlayer.z = y;
+      localPlayer.dead = false;
+      localPlayer.hp = localPlayer.maxHp;
+      pivot.position.set(x, 0, y);
+    }
+    document.getElementById('deathOverlay').classList.add('hidden');
+    if (respawnTimer) { clearInterval(respawnTimer); respawnTimer = null; }
+  });
+
+  socket.on('territory_captured', ({ name, faction, from }) => {
+    const color = FACTION_CSS[faction] || '#ffffff';
+    const fromStr = from ? ` from ${from.charAt(0).toUpperCase() + from.slice(1)}` : '';
+    showNotification(`${faction.charAt(0).toUpperCase() + faction.slice(1)} captured ${name}${fromStr}!`, color, 4000);
+    // Update pillar color immediately
+    for (const t of gameState.territories) {
+      if (!t.isHQ && terrPillars[t.id]) {
+        const { pillar, light } = terrPillars[t.id];
+        const c = t.owner ? (FACTION_HEX[t.owner] || 0x666666) : 0x666666;
+        pillar.material.color.setHex(c);
+        light.color.setHex(c);
+      }
+    }
+  });
+}
+
+function updateRespawnText() {
+  document.getElementById('respawnText').textContent =
+    respawnCountdown > 0 ? `Respawning in ${respawnCountdown}...` : 'Respawning...';
+}
+
+// ── Main render loop ───────────────────────────────────────────────────────────
+let prevTime = performance.now();
+
+function animate() {
+  requestAnimationFrame(animate);
+  const now = performance.now();
+  const dt  = Math.min((now - prevTime) / 1000, 0.1);
+  prevTime  = now;
+  const time = now / 1000;
+
+  if (gameStarted) {
+    updateMovement(dt);
+    updateWeapon(dt, time);
+    updatePlayerMeshes();
+    updateMonsterMeshes();
+    updateProjectileMeshes();
+    updateTerritoryPillars();
+    updateDamageNumbers(dt);
+    drawMinimap();
+  }
+
+  // Main scene render
+  renderer.autoClear = true;
+  renderer.render(scene, camera);
+
+  // Weapon overlay (no depth clear overlap)
+  if (gameStarted && weaponMesh) {
+    renderer.autoClear = false;
+    renderer.clearDepth();
+    renderer.render(weaponScene, weaponCamera);
+  }
+}
+
+// ── Boot ──────────────────────────────────────────────────────────────────────
+window.addEventListener('DOMContentLoaded', () => {
+  initThree();
+  initSocket();
+  animate();
 });

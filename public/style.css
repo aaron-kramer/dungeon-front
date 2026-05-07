@@ -28,15 +28,61 @@ body {
   height: 100vh;
 }
 
-/* ── Game container ─────────────────────────────────────────────────────────── */
+/* ── Game container / Three.js canvas ──────────────────────────────────────── */
 #game-container {
   position: fixed;
   top: 0; left: 0;
   width: 100vw; height: 100vh;
-  cursor: crosshair;
+  z-index: 0;
 }
 #game-container canvas {
   display: block;
+  width: 100vw !important;
+  height: 100vh !important;
+  cursor: none;
+}
+
+/* ── HUD (pointer-events: none so clicks pass through) ─────────────────────── */
+.hud {
+  position: fixed;
+  inset: 0;
+  z-index: 10;
+  pointer-events: none;
+}
+
+/* ── Crosshair ──────────────────────────────────────────────────────────────── */
+#crosshair {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  font-size: 24px;
+  color: white;
+  text-shadow: 0 0 4px rgba(0,0,0,0.9), 1px 1px 2px #000, -1px -1px 2px #000;
+  pointer-events: none;
+  z-index: 20;
+  line-height: 1;
+  user-select: none;
+}
+
+/* ── Pointer lock prompt ────────────────────────────────────────────────────── */
+.lock-prompt {
+  position: fixed;
+  bottom: 40%;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 10px 24px;
+  background: rgba(0,0,0,0.7);
+  border: 1px solid rgba(255,255,255,0.3);
+  border-radius: 4px;
+  color: rgba(255,255,255,0.85);
+  font-size: 0.9rem;
+  letter-spacing: 0.12em;
+  pointer-events: none;
+  transition: opacity 0.3s;
+}
+.lock-prompt.hidden {
+  opacity: 0;
 }
 
 /* ── Lobby overlay ──────────────────────────────────────────────────────────── */
@@ -48,7 +94,6 @@ body {
   align-items: center;
   justify-content: center;
   background: radial-gradient(ellipse at center, #1a1028 0%, #0a0a10 70%);
-  /* Stone-texture depth effect */
   box-shadow:
     inset 0 0 120px rgba(0,0,0,0.8),
     inset 4px 4px 0 rgba(255,255,255,0.04),
@@ -284,9 +329,7 @@ body {
   margin-top: 12px;
 }
 
-/* ── HUD ─────────────────────────────────────────────────────────────────────── */
-.hud { pointer-events: none; }
-
+/* ── Faction score bar ───────────────────────────────────────────────────────── */
 .faction-bar {
   position: fixed;
   top: 12px;
@@ -309,6 +352,7 @@ body {
 .nature-score { color: #66dd88; }
 .fs-icon { font-size: 1rem; }
 
+/* ── Territory info (top right) ──────────────────────────────────────────────── */
 .territory-info {
   position: fixed;
   top: 12px;
@@ -325,6 +369,7 @@ body {
   min-height: 44px;
 }
 
+/* ── Player info (bottom left) ───────────────────────────────────────────────── */
 .player-info {
   position: fixed;
   bottom: 14px;
@@ -367,12 +412,13 @@ body {
 .pi-hp-text { font-size: 0.72rem; color: #aaa; white-space: nowrap; }
 .pi-faction { font-size: 0.72rem; letter-spacing: 0.1em; text-transform: uppercase; }
 
+/* ── Minimap (bottom right) ──────────────────────────────────────────────────── */
 .minimap {
   position: fixed;
   bottom: 14px;
   right: 14px;
-  width: 160px;
-  height: 120px;
+  width: 180px;
+  height: 180px;
   background: rgba(8, 8, 16, 0.9);
   border: 1px solid var(--col-border);
   border-radius: 3px;
@@ -405,4 +451,18 @@ body {
   text-shadow: 0 1px 4px rgba(0,0,0,0.8);
   transition: opacity 0.3s;
   white-space: nowrap;
+}
+
+/* ── Damage number overlays ──────────────────────────────────────────────────── */
+.dmg-number {
+  position: fixed;
+  font-family: var(--font-title);
+  font-size: 18px;
+  font-weight: bold;
+  color: #ffee44;
+  text-shadow: 1px 1px 3px #000, -1px -1px 3px #000;
+  pointer-events: none;
+  z-index: 60;
+  transform: translate(-50%, -50%);
+  transition: none;
 }

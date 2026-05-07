@@ -12,78 +12,78 @@ app.use(express.static(path.join(__dirname, 'public')));
 // ─── Constants ────────────────────────────────────────────────────────────────
 const TICK_RATE    = 20;
 const TICK_MS      = 1000 / TICK_RATE;
-const MAP_WIDTH    = 4000;
-const MAP_HEIGHT   = 3000;
-const CAPTURE_RADIUS = 100;
+const MAP_WIDTH    = 2000;
+const MAP_HEIGHT   = 2000;
+const CAPTURE_RADIUS = 60;
 const CAPTURE_TIME   = 10;  // seconds
 const RESPAWN_TIME   = 5;   // seconds
 
 // ─── Class definitions ────────────────────────────────────────────────────────
 const CLASS_DEFS = {
-  warrior: { hp: 150, speed: 160, damage: 30, range: 70,  atkRate: 1.2, ranged: false },
-  mage:    { hp: 80,  speed: 190, damage: 50, range: 250, atkRate: 1.0, ranged: true,  projType: 'magic' },
-  ranger:  { hp: 100, speed: 210, damage: 40, range: 200, atkRate: 1.5, ranged: true,  projType: 'arrow' },
+  warrior: { hp: 150, speed: 8,  damage: 30, range: 70,  atkRate: 1.2, ranged: false },
+  mage:    { hp: 80,  speed: 9,  damage: 50, range: 250, atkRate: 1.0, ranged: true,  projType: 'magic' },
+  ranger:  { hp: 100, speed: 10, damage: 40, range: 200, atkRate: 1.5, ranged: true,  projType: 'arrow' },
 };
 
-// ─── Faction spawn points ─────────────────────────────────────────────────────
+// ─── Faction spawn points (FPS world coords, centered at 0,0) ─────────────────
 const FACTION_SPAWNS = {
-  order:  { x: 400,  y: 1500 },
-  chaos:  { x: 3600, y: 1500 },
-  nature: { x: 2000, y: 400  },
+  order:  { x: -800, y: 0   },
+  chaos:  { x:  800, y: 0   },
+  nature: { x:  0,   y: -850 },
 };
 
 // ─── Territory definitions ────────────────────────────────────────────────────
 const TERRITORY_DEFS = [
-  { id: 'order_hq',       name: 'Order Keep',       x: 400,  y: 1500, defaultOwner: 'order',  isHQ: true  },
-  { id: 'chaos_hq',       name: 'Chaos Fortress',   x: 3600, y: 1500, defaultOwner: 'chaos',  isHQ: true  },
-  { id: 'nature_hq',      name: 'Nature Grove',     x: 2000, y: 400,  defaultOwner: 'nature', isHQ: true  },
-  { id: 'west_plains',    name: 'Western Plains',   x: 1100, y: 1500, defaultOwner: 'order',  isHQ: false },
-  { id: 'east_valley',    name: 'Eastern Valley',   x: 2900, y: 1500, defaultOwner: 'chaos',  isHQ: false },
-  { id: 'north_ruins',    name: 'Northern Ruins',   x: 2000, y: 1050, defaultOwner: 'nature', isHQ: false },
-  { id: 'center_dungeon', name: 'Dark Dungeon',     x: 2000, y: 1500, defaultOwner: null,     isHQ: false },
-  { id: 'sw_forest',      name: 'Shadow Forest',    x: 1100, y: 2200, defaultOwner: null,     isHQ: false },
-  { id: 'se_canyon',      name: 'Fire Canyon',      x: 2900, y: 2200, defaultOwner: null,     isHQ: false },
+  { id: 'order_hq',       name: 'Order Keep',       x: -800, y: 0,    defaultOwner: 'order',  isHQ: true  },
+  { id: 'chaos_hq',       name: 'Chaos Fortress',   x:  800, y: 0,    defaultOwner: 'chaos',  isHQ: true  },
+  { id: 'nature_hq',      name: 'Nature Grove',     x:  0,   y: -850, defaultOwner: 'nature', isHQ: true  },
+  { id: 'west_plains',    name: 'Western Plains',   x: -500, y: 0,    defaultOwner: 'order',  isHQ: false },
+  { id: 'east_valley',    name: 'Eastern Valley',   x:  500, y: 0,    defaultOwner: 'chaos',  isHQ: false },
+  { id: 'north_ruins',    name: 'Northern Ruins',   x:  0,   y: -350, defaultOwner: 'nature', isHQ: false },
+  { id: 'center_dungeon', name: 'Dark Dungeon',     x:  0,   y: 0,    defaultOwner: null,     isHQ: false },
+  { id: 'sw_forest',      name: 'Shadow Forest',    x: -500, y: 350,  defaultOwner: null,     isHQ: false },
+  { id: 'se_canyon',      name: 'Fire Canyon',      x:  500, y: 350,  defaultOwner: null,     isHQ: false },
 ];
 
 // ─── Monster types ────────────────────────────────────────────────────────────
 const MONSTER_TYPES = {
-  goblin:   { hp: 40, damage: 10, speed: 90,  aggroRange: 400, atkRange: 40, atkRate: 1.0 },
-  orc:      { hp: 80, damage: 15, speed: 70,  aggroRange: 400, atkRange: 50, atkRate: 0.8 },
-  skeleton: { hp: 50, damage: 12, speed: 110, aggroRange: 400, atkRange: 45, atkRate: 1.2 },
+  goblin:   { hp: 40, damage: 10, speed: 4,  aggroRange: 150, atkRange: 15, atkRate: 1.0 },
+  orc:      { hp: 80, damage: 15, speed: 3,  aggroRange: 150, atkRange: 20, atkRate: 0.8 },
+  skeleton: { hp: 50, damage: 12, speed: 5,  aggroRange: 150, atkRange: 18, atkRate: 1.2 },
 };
 
-// ─── Monster spawn locations (neutral/dungeon zones) ─────────────────────────
+// ─── Monster spawn locations ───────────────────────────────────────────────────
 const MONSTER_SPAWNS = [
   // center_dungeon
-  { x: 1900, y: 1400, type: 'goblin'   },
-  { x: 2100, y: 1450, type: 'goblin'   },
-  { x: 2000, y: 1600, type: 'orc'      },
-  { x: 1850, y: 1550, type: 'skeleton' },
-  { x: 2150, y: 1350, type: 'skeleton' },
-  { x: 2050, y: 1650, type: 'goblin'   },
-  { x: 1950, y: 1480, type: 'orc'      },
-  { x: 2200, y: 1550, type: 'goblin'   },
+  { x:  -50, y: -60,  type: 'goblin'   },
+  { x:   50, y: -30,  type: 'goblin'   },
+  { x:    0, y:  60,  type: 'orc'      },
+  { x:  -80, y:  30,  type: 'skeleton' },
+  { x:   80, y: -80,  type: 'skeleton' },
+  { x:   30, y:  90,  type: 'goblin'   },
+  { x:  -30, y: -10,  type: 'orc'      },
+  { x:  100, y:  30,  type: 'goblin'   },
   // sw_forest
-  { x: 1050, y: 2150, type: 'goblin'   },
-  { x: 1150, y: 2250, type: 'goblin'   },
-  { x: 1080, y: 2300, type: 'orc'      },
-  { x: 1200, y: 2180, type: 'skeleton' },
+  { x: -530, y: 310,  type: 'goblin'   },
+  { x: -470, y: 390,  type: 'goblin'   },
+  { x: -510, y: 420,  type: 'orc'      },
+  { x: -450, y: 330,  type: 'skeleton' },
   // se_canyon
-  { x: 2850, y: 2150, type: 'orc'      },
-  { x: 2950, y: 2250, type: 'goblin'   },
-  { x: 2900, y: 2300, type: 'skeleton' },
-  { x: 3000, y: 2180, type: 'goblin'   },
+  { x:  470, y: 310,  type: 'orc'      },
+  { x:  530, y: 390,  type: 'goblin'   },
+  { x:  500, y: 420,  type: 'skeleton' },
+  { x:  550, y: 330,  type: 'goblin'   },
   // north_ruins
-  { x: 1950, y: 1000, type: 'skeleton' },
-  { x: 2050, y: 1100, type: 'skeleton' },
-  { x: 2100, y: 1000, type: 'orc'      },
+  { x:  -30, y: -390, type: 'skeleton' },
+  { x:   30, y: -320, type: 'skeleton' },
+  { x:   60, y: -380, type: 'orc'      },
 ];
 
 // ─── Game state ───────────────────────────────────────────────────────────────
-let players     = {};    // socketId → player object
-let monsters    = {};    // id → monster
-let territories = {};    // id → territory
-let projectiles = {};    // id → projectile
+let players     = {};
+let monsters    = {};
+let territories = {};
+let projectiles = {};
 let pendingDamageNumbers = [];
 let nextMonsterId    = 1;
 let nextProjectileId = 1;
@@ -98,7 +98,7 @@ function initTerritories() {
       y:               def.y,
       owner:           def.defaultOwner,
       isHQ:            def.isHQ,
-      captureProgress: 0,   // 0-1
+      captureProgress: 0,
       capturingFaction: null,
       contestedBy:     [],
     };
@@ -112,8 +112,8 @@ function spawnMonster(spawnDef) {
   monsters[id] = {
     id,
     type:        spawnDef.type,
-    x:           spawnDef.x + (Math.random() - 0.5) * 60,
-    y:           spawnDef.y + (Math.random() - 0.5) * 60,
+    x:           spawnDef.x + (Math.random() - 0.5) * 20,
+    y:           spawnDef.y + (Math.random() - 0.5) * 20,
     spawnX:      spawnDef.x,
     spawnY:      spawnDef.y,
     hp:          def.hp,
@@ -124,7 +124,7 @@ function spawnMonster(spawnDef) {
     atkRange:    def.atkRange,
     atkRate:     def.atkRate,
     atkCooldown: 0,
-    target:      null,   // player id
+    target:      null,
     aggro:       false,
     spawnDef,
   };
@@ -157,14 +157,13 @@ let lastTick = Date.now();
 
 function gameTick() {
   const now = Date.now();
-  const dt  = (now - lastTick) / 1000;  // seconds
+  const dt  = (now - lastTick) / 1000;
   lastTick  = now;
 
   const alivePlayers = Object.values(players).filter(p => !p.dead);
 
   // ── Monster AI ──────────────────────────────────────────────────────────────
   for (const mon of Object.values(monsters)) {
-    // Find nearest alive player
     let nearest = null, nearestDist = Infinity;
     for (const p of alivePlayers) {
       const d = dist(mon, p);
@@ -175,7 +174,6 @@ function gameTick() {
       mon.aggro  = true;
       mon.target = nearest.id;
 
-      // Move toward player
       const dx = nearest.x - mon.x;
       const dy = nearest.y - mon.y;
       const d  = Math.sqrt(dx * dx + dy * dy);
@@ -184,12 +182,11 @@ function gameTick() {
         mon.y += (dy / d) * mon.speed * dt;
       }
 
-      // Attack
       mon.atkCooldown -= dt;
-      if (mon.atkCooldown <= 0 && nearestDist <= mon.atkRange + 10) {
+      if (mon.atkCooldown <= 0 && nearestDist <= mon.atkRange + 5) {
         mon.atkCooldown = 1 / mon.atkRate;
         nearest.hp -= mon.damage;
-        pendingDamageNumbers.push({ x: nearest.x, y: nearest.y - 20, amount: mon.damage, id: randomHex(8) });
+        pendingDamageNumbers.push({ x: nearest.x, y: nearest.y, amount: mon.damage, id: randomHex(8) });
         if (nearest.hp <= 0) {
           killPlayer(nearest);
         }
@@ -197,11 +194,10 @@ function gameTick() {
     } else {
       mon.aggro  = false;
       mon.target = null;
-      // Wander slightly back toward spawn
       const dx = mon.spawnX - mon.x;
       const dy = mon.spawnY - mon.y;
       const d  = Math.sqrt(dx * dx + dy * dy);
-      if (d > 20) {
+      if (d > 5) {
         mon.x += (dx / d) * mon.speed * 0.3 * dt;
         mon.y += (dy / d) * mon.speed * 0.3 * dt;
       }
@@ -217,12 +213,11 @@ function gameTick() {
     let hit = false;
 
     if (proj.owner === 'player') {
-      // Check monster collisions
       for (const mon of Object.values(monsters)) {
-        const hitRadius = proj.type === 'magic' ? 16 : 10;
+        const hitRadius = proj.type === 'magic' ? 3 : 2;
         if (dist(proj, mon) < hitRadius) {
           mon.hp -= proj.damage;
-          pendingDamageNumbers.push({ x: mon.x, y: mon.y - 20, amount: proj.damage, id: randomHex(8) });
+          pendingDamageNumbers.push({ x: mon.x, y: mon.y, amount: proj.damage, id: randomHex(8) });
           if (mon.hp <= 0) {
             const sd = mon.spawnDef;
             delete monsters[mon.id];
@@ -232,14 +227,13 @@ function gameTick() {
           break;
         }
       }
-      // Check enemy player collisions
       if (!hit) {
         for (const p of alivePlayers) {
           if (p.id === proj.ownerId) continue;
-          if (p.faction === proj.ownerFaction) continue;  // no friendly fire
-          if (dist(proj, p) < 16) {
+          if (p.faction === proj.ownerFaction) continue;
+          if (dist(proj, p) < 2) {
             p.hp -= proj.damage;
-            pendingDamageNumbers.push({ x: p.x, y: p.y - 20, amount: proj.damage, id: randomHex(8) });
+            pendingDamageNumbers.push({ x: p.x, y: p.y, amount: proj.damage, id: randomHex(8) });
             if (p.hp <= 0) killPlayer(p);
             hit = true;
             break;
@@ -248,9 +242,9 @@ function gameTick() {
       }
     }
 
-    // Remove if hit or max range exceeded or out of bounds
     if (hit || proj.distTraveled > proj.maxDist ||
-        proj.x < 0 || proj.x > MAP_WIDTH || proj.y < 0 || proj.y > MAP_HEIGHT) {
+        proj.x < -MAP_WIDTH/2 || proj.x > MAP_WIDTH/2 ||
+        proj.y < -MAP_HEIGHT/2 || proj.y > MAP_HEIGHT/2) {
       delete projectiles[pid];
     }
   }
@@ -259,7 +253,6 @@ function gameTick() {
   for (const terr of Object.values(territories)) {
     if (terr.isHQ) continue;
 
-    // Find factions on point
     const factionsOnPoint = {};
     for (const p of alivePlayers) {
       if (dist(p, terr) <= CAPTURE_RADIUS) {
@@ -270,29 +263,23 @@ function gameTick() {
     const factionList = Object.keys(factionsOnPoint);
 
     if (factionList.length === 0) {
-      // Nobody on point — decay slowly toward owner or neutral
       if (terr.captureProgress > 0 && terr.capturingFaction !== terr.owner) {
         terr.captureProgress = Math.max(0, terr.captureProgress - dt / CAPTURE_TIME * 0.5);
       }
       terr.contestedBy = [];
     } else if (factionList.length > 1) {
-      // Contested
       terr.contestedBy = factionList;
     } else {
-      // Single faction on point
       const attackingFaction = factionList[0];
       terr.contestedBy = [];
 
       if (attackingFaction === terr.owner) {
-        // Owner is on point — reset any capture progress
         if (terr.capturingFaction && terr.capturingFaction !== terr.owner) {
           terr.captureProgress = Math.max(0, terr.captureProgress - dt / CAPTURE_TIME);
           if (terr.captureProgress <= 0) terr.capturingFaction = null;
         }
       } else {
-        // Enemy capturing
         if (terr.capturingFaction && terr.capturingFaction !== attackingFaction) {
-          // Different faction was capturing — reset
           terr.captureProgress = 0;
         }
         terr.capturingFaction = attackingFaction;
@@ -369,10 +356,10 @@ function killPlayer(player) {
   if (sock) sock.emit('you_died', { respawnIn: RESPAWN_TIME });
 
   setTimeout(() => {
-    if (!players[player.id]) return; // disconnected
+    if (!players[player.id]) return;
     const spawn = FACTION_SPAWNS[player.faction];
-    player.x    = spawn.x + (Math.random() - 0.5) * 100;
-    player.y    = spawn.y + (Math.random() - 0.5) * 100;
+    player.x    = spawn.x + (Math.random() - 0.5) * 60;
+    player.y    = spawn.y + (Math.random() - 0.5) * 60;
     player.hp   = player.maxHp;
     player.dead = false;
     const s = io.sockets.sockets.get(player.id);
@@ -394,8 +381,8 @@ io.on('connection', socket => {
     players[socket.id] = {
       id:          socket.id,
       name:        (name || 'Hero').slice(0, 20),
-      x:           spawn.x + (Math.random() - 0.5) * 100,
-      y:           spawn.y + (Math.random() - 0.5) * 100,
+      x:           spawn.x + (Math.random() - 0.5) * 60,
+      y:           spawn.y + (Math.random() - 0.5) * 60,
       hp:          def.hp,
       maxHp:       def.hp,
       faction,
@@ -423,9 +410,8 @@ io.on('connection', socket => {
   socket.on('player_move', ({ x, y, facing }) => {
     const p = players[socket.id];
     if (!p || p.dead) return;
-    // Authoritative server: clamp position
-    p.x      = clamp(x, 0, MAP_WIDTH);
-    p.y      = clamp(y, 0, MAP_HEIGHT);
+    p.x      = clamp(x, -MAP_WIDTH/2, MAP_WIDTH/2);
+    p.y      = clamp(y, -MAP_HEIGHT/2, MAP_HEIGHT/2);
     p.facing = facing || 0;
   });
 
@@ -440,11 +426,10 @@ io.on('connection', socket => {
     setTimeout(() => { if (players[socket.id]) players[socket.id].attacking = false; }, 200);
 
     if (p.ranged) {
-      // Fire projectile
       const dx  = targetX - p.x;
       const dy  = targetY - p.y;
       const mag = Math.sqrt(dx * dx + dy * dy) || 1;
-      const spd = 450;
+      const spd = 60;
       const id  = 'proj_' + (nextProjectileId++);
       const maxDist = p.projType === 'magic' ? 250 : 200;
       projectiles[id] = {
@@ -462,13 +447,10 @@ io.on('connection', socket => {
         distTraveled: 0,
       };
     } else {
-      // Melee — hit all enemies in range
-      const hits = [];
       for (const mon of Object.values(monsters)) {
         if (dist(p, mon) <= p.range) {
           mon.hp -= p.damage;
-          pendingDamageNumbers.push({ x: mon.x, y: mon.y - 20, amount: p.damage, id: randomHex(8) });
-          hits.push(mon);
+          pendingDamageNumbers.push({ x: mon.x, y: mon.y, amount: p.damage, id: randomHex(8) });
           if (mon.hp <= 0) {
             const sd = mon.spawnDef;
             delete monsters[mon.id];
@@ -480,7 +462,7 @@ io.on('connection', socket => {
         if (enemy.id === p.id || enemy.faction === p.faction || enemy.dead) continue;
         if (dist(p, enemy) <= p.range) {
           enemy.hp -= p.damage;
-          pendingDamageNumbers.push({ x: enemy.x, y: enemy.y - 20, amount: p.damage, id: randomHex(8) });
+          pendingDamageNumbers.push({ x: enemy.x, y: enemy.y, amount: p.damage, id: randomHex(8) });
           if (enemy.hp <= 0) killPlayer(enemy);
         }
       }

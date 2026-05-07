@@ -48,7 +48,7 @@
           <span class="class-name">WARRIOR</span>
           <div class="class-stats">
             <span>HP: 150</span>
-            <span>SPD: 160</span>
+            <span>SPD: 8</span>
             <span>DMG: 30</span>
             <span>Melee</span>
           </div>
@@ -58,7 +58,7 @@
           <span class="class-name">MAGE</span>
           <div class="class-stats">
             <span>HP: 80</span>
-            <span>SPD: 190</span>
+            <span>SPD: 9</span>
             <span>DMG: 50</span>
             <span>Magic</span>
           </div>
@@ -68,7 +68,7 @@
           <span class="class-name">RANGER</span>
           <div class="class-stats">
             <span>HP: 100</span>
-            <span>SPD: 210</span>
+            <span>SPD: 10</span>
             <span>DMG: 40</span>
             <span>Ranged</span>
           </div>
@@ -95,6 +95,12 @@
 <!-- ── HUD ────────────────────────────────────────────────────────────────── -->
 <div id="hud" class="hud hidden">
 
+  <!-- Crosshair -->
+  <div id="crosshair">+</div>
+
+  <!-- Pointer lock prompt -->
+  <div id="lockPrompt" class="lock-prompt">Click to enter game</div>
+
   <!-- Top bar: faction scores -->
   <div id="factionBar" class="faction-bar">
     <span class="fscore order-score"><span class="fs-icon">⚔</span> ORDER [<span id="orderScore">0</span>]</span>
@@ -116,18 +122,19 @@
   </div>
 
   <!-- Bottom right: minimap -->
-  <canvas id="minimap" class="minimap" width="160" height="120"></canvas>
+  <canvas id="minimap" class="minimap" width="180" height="180"></canvas>
+
 </div>
 
 <!-- ── Notification area ──────────────────────────────────────────────────── -->
 <div id="notifications" class="notifications"></div>
 
-<!-- ── Phaser canvas placeholder ─────────────────────────────────────────── -->
+<!-- ── Three.js canvas container ─────────────────────────────────────────── -->
 <div id="game-container"></div>
 
 <!-- ── Scripts ────────────────────────────────────────────────────────────── -->
-<script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/phaser@3.60.0/dist/phaser.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r134/three.min.js"></script>
+<script src="https://cdn.socket.io/4.6.1/socket.io.min.js"></script>
 <script src="game.js"></script>
 </body>
 </html>
