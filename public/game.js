@@ -54,6 +54,7 @@ let yaw = 0;
 let pitch = 0;
 let moveForward = false, moveBack = false, moveLeft = false, moveRight = false;
 let isPointerLocked = false;
+let mouseSensitivity = 1.0;
 
 // ── Three.js objects ───────────────────────────────────────────────────────────
 let renderer, scene, camera, pivot;
@@ -104,6 +105,11 @@ function updateEnterButton() {
   document.getElementById('enterBattle').disabled = !(selectedFaction && selectedClass && name.length > 0);
 }
 document.getElementById('playerName').addEventListener('input', updateEnterButton);
+
+document.getElementById('sensitivitySlider').addEventListener('input', e => {
+  mouseSensitivity = parseFloat(e.target.value);
+  document.getElementById('sensValue').textContent = mouseSensitivity.toFixed(1);
+});
 
 document.getElementById('enterBattle').addEventListener('click', () => {
   const name = document.getElementById('playerName').value.trim() || 'Hero';
@@ -810,8 +816,8 @@ function initThree() {
 function setupInput() {
   document.addEventListener('mousemove', e => {
     if (!isPointerLocked) return;
-    yaw   -= e.movementX * 0.002;
-    pitch -= e.movementY * 0.002;
+    yaw   -= e.movementX * 0.002 * mouseSensitivity;
+    pitch -= e.movementY * 0.002 * mouseSensitivity;
     pitch  = Math.max(-1.4, Math.min(1.4, pitch));
     pivot.rotation.y = yaw;
     camera.rotation.x = pitch;
